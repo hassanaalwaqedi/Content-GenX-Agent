@@ -1,0 +1,19 @@
+# Content Intelligence Platform — Dependencies
+# Python 3.11+
+
+# Web framework
+fastapi>=0.110.0,<1.0.0
+uvicorn[standard]>=0.29.0,<1.0.0
+
+# Data validation & settings
+pydantic>=2.6.0,<3.0.0
+pydantic-settings>=2.2.0,<3.0.0
+
+# HTTP client
+requests>=2.31.0,<3.0.0
+
+# Task scheduling
+schedule>=1.2.0,<2.0.0
+
+# Environment variable loading
+python-dotenv>=1.0.0,<2.0.0
