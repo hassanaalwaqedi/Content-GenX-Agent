@@ -151,6 +151,7 @@ class Settings(BaseSettings):
             "http://localhost:8000",
             "https://genxagent-f420f.web.app",
             "https://genxagent-f420f.firebaseapp.com",
+            "https://content-genx-agent.onrender.com",
         ],
         description="Allowed CORS origins. Set to ['*'] only for development.",
     )
