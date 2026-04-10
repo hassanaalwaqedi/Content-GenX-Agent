@@ -67,13 +67,13 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# CORS -- restricted to configured origins (secure by default)
+# CORS -- allow cross-origin requests from Firebase frontend
 _settings = get_settings()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_settings.cors_allowed_origins,
-    allow_credentials=False,
-    allow_methods=["GET", "POST"],
+    allow_credentials=True,
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 

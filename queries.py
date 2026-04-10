@@ -200,10 +200,12 @@ def get_transcript_stats() -> Dict[str, Any]:
             COUNT(*) AS total_youtube,
             SUM(CASE WHEN transcript IS NOT NULL AND transcript != '' THEN 1 ELSE 0 END) AS with_transcript,
             SUM(CASE WHEN transcript IS NULL OR transcript = '' THEN 1 ELSE 0 END) AS without_transcript,
-            ROUND(
-                100.0 * SUM(CASE WHEN transcript IS NOT NULL AND transcript != '' THEN 1 ELSE 0 END) / MAX(COUNT(*), 1),
-                1
-            ) AS coverage_pct
+            CASE WHEN COUNT(*) > 0 THEN
+                ROUND(
+                    100.0 * SUM(CASE WHEN transcript IS NOT NULL AND transcript != '' THEN 1 ELSE 0 END) / COUNT(*),
+                    1
+                )
+            ELSE 0.0 END AS coverage_pct
         FROM videos
         WHERE platform = 'youtube';
     """
