@@ -38,5 +38,25 @@ frontend/dist/
 frontend/.vite/
 *.log
 
-# Pytest
+# Pytest / Coverage
 .pytest_cache/
+.coverage
+htmlcov/
+
+# Elastic Beanstalk Files
+.elasticbeanstalk/*
+!.elasticbeanstalk/*.cfg.yml
+!.elasticbeanstalk/*.global.yml
+
+# AWS deployment configs (contain secrets)
+apprunner-config.json
+eb-env-options.json
+cloudfront-config.json
+trust-policy.json
+
+# Temp utility scripts
+check_pipeline.py
+check_transcript.py
+
+# Firebase deployment cache
+.firebase/

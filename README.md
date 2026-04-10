@@ -1,8 +1,27 @@
-# Content Intelligence Platform
+# Content Intelligence Platform — Backend API
 
-> **GenX Leadership Academy** — Production-grade AI-powered content intelligence system that identifies high-performing content across YouTube and Reddit, extracts transcripts, enriches with LLM insights, and delivers actionable analytics through a real-time dashboard.
+> **GenX Leadership Academy** — Production-grade AI-powered content intelligence engine that identifies high-performing content across YouTube and Reddit, extracts transcripts, and enriches videos with strategic LLM insights.
 
-Built as a modular, production-ready system that **ingests**, **scores**, **enriches with AI**, **extracts transcripts**, and **serves insights** — designed to run daily on autopilot.
+## 📋 Project Scope
+
+**The backend API is the core deliverable.** It is a fully self-contained, production-ready service that can be consumed by _any_ frontend, mobile app, or data pipeline.
+
+A **React dashboard** is included as a _bonus visualization layer_ to demonstrate the backend capabilities in action. The company can:
+
+- ✅ **Use the backend only** — integrate the REST API into your own frontend, BI tool, or data workflow
+- ✅ **Use both** — the included React dashboard is fully functional and production-hosted
+- ✅ **Replace the frontend** — the API is self-documented (`/docs`) and works with any HTTP client
+
+### Getting Started (2 API Keys Only)
+
+The entire platform runs with just **two API keys**:
+
+| Key | Required | Free Tier | Get It |
+|-----|----------|-----------|--------|
+| `YOUTUBE_API_KEY` | ✅ Yes | 10,000 units/day | [Google Cloud Console](https://console.cloud.google.com/apis/credentials) |
+| `GROQ_API_KEY` | 🔶 Recommended | 14,400 req/day | [Groq Console](https://console.groq.com/keys) |
+
+> Reddit API credentials are optional and only needed if you want Reddit content alongside YouTube.
 
 ---
 
@@ -51,48 +70,9 @@ Built as a modular, production-ready system that **ingests**, **scores**, **enri
 ┌─────────────┐   ┌──────────────┐
 │  FastAPI     │   │  React 19    │
 │  REST API    │   │  Dashboard   │
-│  api.py      │   │  (Vite)      │
+│  (Backend)   │   │  (Bonus)     │
 └─────────────┘   └──────────────┘
-
-┌──────────────┐
-│  Scheduler   │──── daily @ 06:00 UTC ──→ Pipeline
-│ scheduler.py │
-└──────────────┘
 ```
-
----
-
-## Key Design Decisions
-
-| Decision | Rationale | Tradeoffs |
-|----------|-----------|-----------|
-| **YouTube API** over scraping | Reliable, structured data. No risk of breaking changes or legal issues with scraping. Google's Terms of Service explicitly allow API usage | Limited to 10,000 units/day (free tier). Each search costs 100 units, each video details call costs 1 unit. Sufficient for daily batches of 150+ videos per niche |
-| **Reddit API** as second platform | Free, no geographic restrictions (unlike TikTok), rich text content ideal for NLP. Subreddits map directly to our "niche" concept | Requires OAuth2 app registration. Approval may take 1-2 days for new apps |
-| **SQLite** over PostgreSQL | Zero-config deployment, WAL mode handles concurrent reads from API + pipeline. Schema is PostgreSQL-compatible for easy migration when scaling | Single-writer limitation. Mitigated with pipeline mutex lock |
-| **Groq API** over OpenAI | 10x faster inference (<500ms per call vs 2-3s), free tier handles daily enrichment batches. Uses Llama 3.3 70B model | Smaller context window. Mitigated by truncating descriptions and enriching only top N videos per niche |
-| **Exponential decay** for recency | Mathematically smooth degradation vs. hard time windows. A 2-day-old video scores ~0.95, a 30-day-old scores ~0.5 | Very old content effectively scores 0 for recency. Configurable half-life parameter |
-| **Rule-based fallback** for enrichment | Ensures 100% topic extraction coverage even when LLM rate limits are hit or API is unavailable | Lower quality than LLM extraction. ~80% accuracy on keyword matching vs ~95% with LLM |
-| **youtube-transcript-api** for transcripts | No API key needed, free, supports auto-generated + manual captions in 6 languages | YouTube rate-limits aggressive usage. Mitigated with 1-2s delay between requests |
-
----
-
-## Scoring Formula — Definition of "High-Performing"
-
-Videos are scored using a weighted composite of three normalized signals:
-
-```
-score = 0.40 × norm(log(1 + views))
-      + 0.35 × norm(engagement_rate)
-      + 0.25 × recency_factor
-```
-
-Where:
-- **`engagement_rate`** = `(likes + comments) / views` — captures audience interaction quality
-- **`recency_factor`** = exponential decay with 30-day half-life (`e^(-ln2 × age/30)`) — rewards fresh content
-- **`norm()`** = min-max normalization across the current batch — fair comparison regardless of niche size
-- **Filtering**: Videos with < 1,000 views or < 2% engagement rate are excluded as low-signal
-
-All weights and thresholds are configurable via environment variables.
 
 ---
 
@@ -113,110 +93,44 @@ pip install -r requirements.txt
 
 # 4. Configure environment
 cp .env.example .env
-# Edit .env with your API keys:
+# Edit .env — only two keys needed:
 #   YOUTUBE_API_KEY=your_key_here      (required)
-#   GROQ_API_KEY=your_key_here         (optional, for AI enrichment)
-#   REDDIT_CLIENT_ID=your_id_here      (optional, for Reddit ingestion)
-#   REDDIT_CLIENT_SECRET=your_secret   (optional, for Reddit ingestion)
+#   GROQ_API_KEY=your_key_here         (recommended)
 
 # 5. Run the pipeline (ingests, scores, enriches, extracts transcripts)
 python main.py
 
 # 6. Start the backend API
 uvicorn api:app --reload
-# Swagger docs: http://localhost:8000/docs
+# Swagger docs → http://localhost:8000/docs
+```
 
-# 7. Start the frontend dashboard
+### (Optional) Start the Dashboard
+
+```bash
 cd frontend
 npm install
 npm run dev
-# Dashboard: http://localhost:5173
+# Dashboard → http://localhost:5173
 ```
 
 ---
 
-## Project Structure
+## Live Demo
 
-```
-content-intelligence-agent/
-├── main.py                  # Pipeline orchestrator (5-step ETL)
-├── api.py                   # FastAPI REST application
-├── config.py                # Pydantic Settings with .env loading
-├── ingestion.py             # YouTube Data API v3 client
-├── reddit_ingestion.py      # Reddit OAuth2 API client
-├── processing.py            # Scoring engine (views + engagement + recency)
-├── ai_enrichment.py         # Groq LLM integration with rate-limit handling
-├── transcripts.py           # YouTube transcript extraction (multi-language)
-├── database.py              # SQLite persistence + auto-migration
-├── queries.py               # Analytical query layer
-├── scheduler.py             # Daily automation with graceful shutdown
-├── backfill_transcripts.py  # One-time script to backfill transcripts
-├── requirements.txt         # Pinned dependencies
-├── tests/
-│   ├── test_processing.py       # Scoring logic tests
-│   ├── test_database.py         # Database operation tests
-│   ├── test_enrichment.py       # AI enrichment tests
-│   ├── test_api_endpoints.py    # API endpoint tests
-│   └── test_reddit_ingestion.py # Reddit integration tests
-├── frontend/
-│   ├── src/
-│   │   ├── pages/
-│   │   │   ├── Dashboard.jsx    # KPI overview + niche breakdown
-│   │   │   ├── TopVideos.jsx    # Ranked video table per niche
-│   │   │   ├── Trending.jsx     # Fastest-growing + engagement chart
-│   │   │   ├── Creators.jsx     # Creator leaderboard
-│   │   │   ├── Pipeline.jsx     # Pipeline control + audit log
-│   │   │   └── VideoDetail.jsx  # Full detail + transcript + AI insights
-│   │   ├── components/Layout.jsx # Sidebar + theme toggle
-│   │   └── api/
-│   │       ├── client.js        # Axios API wrapper
-│   │       └── export.js        # PDF report generation
-│   └── index.html
-├── .env.example             # Environment variable template
-└── .gitignore
-```
+| Component | URL | Status |
+|-----------|-----|--------|
+| **Backend API** | `https://d3tcfetguww88w.cloudfront.net` | ✅ Live |
+| **Swagger Docs** | `https://d3tcfetguww88w.cloudfront.net/docs` | ✅ Live |
+| **Dashboard** (bonus) | `https://genxagent-f420f.web.app` | ✅ Live |
 
----
-
-## Database Schema
-
-```sql
-CREATE TABLE videos (
-    video_id         TEXT PRIMARY KEY,
-    platform         TEXT NOT NULL DEFAULT 'youtube',  -- 'youtube' or 'reddit'
-    niche            TEXT NOT NULL,
-    title            TEXT NOT NULL,
-    description      TEXT DEFAULT '',
-    channel          TEXT DEFAULT '',
-    thumbnail_url    TEXT DEFAULT '',
-    published_at     TEXT DEFAULT '',
-    views            INTEGER DEFAULT 0,
-    likes            INTEGER DEFAULT 0,
-    comments         INTEGER DEFAULT 0,
-    engagement_rate  REAL DEFAULT 0.0,
-    score            REAL DEFAULT 0.0,
-    target_audience  TEXT DEFAULT 'Analysis pending',   -- AI-generated
-    strategic_advice TEXT DEFAULT 'Analysis pending',   -- AI-generated
-    content_gap      TEXT DEFAULT 'Analysis pending',   -- AI-generated
-    transcript       TEXT DEFAULT '',                    -- YouTube captions
-    created_at       TEXT NOT NULL,
-    updated_at       TEXT NOT NULL
-);
-
--- Performance indexes
-CREATE INDEX idx_videos_niche     ON videos(niche);
-CREATE INDEX idx_videos_score     ON videos(score DESC);
-CREATE INDEX idx_videos_published ON videos(published_at);
-CREATE INDEX idx_videos_channel   ON videos(channel);
-```
+> **Infrastructure**: Backend hosted on AWS (Elastic Beanstalk + CloudFront HTTPS). Dashboard on Firebase Hosting.
 
 ---
 
 ## API Documentation
 
-Interactive docs available at:
-- **Swagger UI**: [http://localhost:8000/docs](http://localhost:8000/docs)
-- **ReDoc**: [http://localhost:8000/redoc](http://localhost:8000/redoc)
+Interactive docs available at `/docs` (Swagger) or `/redoc` (ReDoc).
 
 ### Endpoints
 
@@ -228,69 +142,151 @@ Interactive docs available at:
 | `GET` | `/videos/{video_id}` | Full detail with transcript + AI insights |
 | `GET` | `/creators/top?min_videos=2` | Top creators by aggregate score |
 | `GET` | `/stats` | Database-wide statistics + platform breakdown |
+| `GET` | `/stats/transcripts` | Transcript coverage metrics |
 | `POST` | `/pipeline/run` | Trigger pipeline (background, mutex-locked) |
 | `GET` | `/pipeline/history` | Pipeline run audit log |
 
----
+### Example Queries
 
-## Query Capability
+```bash
+# Top 10 AI videos from the last 7 days
+curl "https://d3tcfetguww88w.cloudfront.net/videos/top?niche=AI+for+business&days=7&limit=10"
 
-### 1. Top 10 Videos Per Niche (Last 7 Days)
-```
-GET /videos/top?niche=AI+for+business&days=7&limit=10
-```
+# Fastest-growing content
+curl "https://d3tcfetguww88w.cloudfront.net/videos/trending?days=7&limit=20"
 
-### 2. Fastest-Growing Content
+# Top creators
+curl "https://d3tcfetguww88w.cloudfront.net/creators/top?limit=20&min_videos=2"
 ```
-GET /videos/trending?days=7&limit=20
-```
-
-### 3. High-Performing Creators
-```
-GET /creators/top?limit=20&min_videos=2
-```
-
-### 4. React Dashboard (Visual Interface)
-The full-stack dashboard at `http://localhost:5173` provides:
-- **Dashboard** — KPI cards, platform breakdown (YouTube vs Reddit)
-- **Top Videos** — Filterable table with scores, engagement badges, platform icons
-- **Trending** — Engagement rate chart + fastest-growing content
-- **Creators** — Aggregated creator leaderboard
-- **Video Detail** — Full AI insights, transcript viewer, source link
-- **Pipeline** — Trigger runs, view audit history
-
-### 5. PDF Reports
-Export branded PDF reports from any page with GenX Leadership Academy headers/footers.
 
 ---
 
-## Content Understanding (Bonus)
+## Key Design Decisions
 
-### AI Enrichment (Groq LLM)
-Each video is analyzed to extract:
-- **Target Audience** — Who this content serves
-- **Strategic Advice** — Actionable recommendations for content creators
-- **Content Gaps** — What the video missed that we could cover
-- **Topics** — Key themes via rule-based + LLM extraction
-
-### Transcript Extraction
-- Extracts YouTube captions (manual + auto-generated)
-- Supports 6 languages: English, German, French, Spanish, Arabic, Turkish
-- Throttled requests to avoid YouTube rate limiting
-- Stored in database for potential use in retrieval systems
+| Decision | Rationale | Tradeoffs |
+|----------|-----------|-----------|
+| **YouTube API** over scraping | Reliable, structured data. Google's ToS explicitly allow API usage | Limited to 10,000 units/day. Sufficient for daily batches of 150+ videos per niche |
+| **Reddit API** as second platform | Free, rich text content. Subreddits map directly to our "niche" concept | Requires OAuth2 app registration; approval may take 1-2 days |
+| **SQLite** over PostgreSQL | Zero-config deployment, WAL mode handles concurrent reads. Schema is PostgreSQL-compatible for easy migration | Single-writer limitation. Mitigated with pipeline mutex lock |
+| **Groq API** (Llama 3.3 70B) over OpenAI | 10x faster inference (<500ms per call), generous free tier | Smaller context window. Mitigated by enriching only top N videos per niche |
+| **Exponential decay** for recency | Smooth degradation vs. hard time windows. 2-day-old video scores ~0.95, 30-day-old scores ~0.5 | Configurable half-life parameter |
+| **Circuit breaker** pattern | Prevents cascading failures when Groq API is down or rate-limited | Falls back to rule-based topic extraction (~80% accuracy vs ~95% with LLM) |
+| **youtube-transcript-api** for transcripts | No API key needed, supports auto-generated + manual captions in 6 languages | YouTube rate-limits aggressive usage. Mitigated with throttled requests |
 
 ---
 
-## Sample Dataset
+## Scoring Formula
 
-The platform covers 3 required niches with 400+ videos:
+Videos are scored using a weighted composite of three normalized signals:
 
-| Niche | Videos | Avg Score |
-|-------|:------:|:---------:|
-| AI for business | ~135 | 0.45 |
-| AI productivity | ~135 | 0.42 |
-| Prompt engineering | ~136 | 0.40 |
-| **Total** | **406** | **0.42** |
+```
+score = 0.40 × norm(log(1 + views))
+      + 0.35 × norm(engagement_rate)
+      + 0.25 × recency_factor
+```
+
+Where:
+- **`engagement_rate`** = `(likes + comments) / views`
+- **`recency_factor`** = exponential decay with 30-day half-life (`e^(-ln2 × age/30)`)
+- **`norm()`** = min-max normalization across the current batch
+- **Filtering**: Videos with < 1,000 views or < 2% engagement rate are excluded
+
+All weights and thresholds are configurable via environment variables.
+
+---
+
+## Project Structure
+
+```
+content-intelligence-agent/
+├── api.py                   # FastAPI REST application (core deliverable)
+├── main.py                  # Pipeline orchestrator (5-step ETL)
+├── config.py                # Pydantic Settings with .env loading
+├── ingestion.py             # YouTube Data API v3 client
+├── reddit_ingestion.py      # Reddit OAuth2 API client
+├── processing.py            # Scoring engine (views + engagement + recency)
+├── ai_enrichment.py         # Groq LLM integration with circuit breaker
+├── transcripts.py           # YouTube transcript extraction (multi-language)
+├── database.py              # SQLite persistence + auto-migration
+├── queries.py               # Analytical query layer
+├── scheduler.py             # Daily automation with graceful shutdown
+├── requirements.txt         # Pinned dependencies
+├── Dockerfile               # Production container image
+├── Procfile                 # Process definition for PaaS platforms
+├── .github/workflows/ci.yml # GitHub Actions CI (tests on push/PR)
+├── tests/                   # 106 automated tests
+│   ├── test_processing.py       # 17 tests — scoring, normalization, recency
+│   ├── test_database.py         # 16 tests — schema, upserts, locking
+│   ├── test_enrichment.py       # 11 tests — circuit breaker, rate limits
+│   ├── test_api.py              # 15 tests — endpoint contracts
+│   ├── test_api_endpoints.py    # 32 tests — full API integration
+│   ├── test_config.py           #  8 tests — settings validation
+│   └── test_reddit_ingestion.py #  7 tests — Reddit integration
+├── frontend/                # (Bonus) React 19 + Vite dashboard
+│   ├── src/pages/               # Dashboard, TopVideos, Trending, etc.
+│   ├── src/api/client.js        # API wrapper
+│   └── src/api/export.js        # PDF report generation
+├── .env.example             # Environment variable template
+└── .gitignore
+```
+
+---
+
+## Testing
+
+```bash
+# Run the full test suite (106 tests)
+python -m pytest tests/ -v
+
+# Run specific module
+python -m pytest tests/test_processing.py -v
+
+# CI: Tests run automatically on every push/PR via GitHub Actions
+```
+
+**Test coverage**: 106 tests across 7 modules covering scoring logic, database operations, AI enrichment (circuit breaker, rate limits), API endpoint contracts, configuration validation, and Reddit integration.
+
+---
+
+## Database Schema
+
+```sql
+CREATE TABLE videos (
+    video_id         TEXT PRIMARY KEY,
+    platform         TEXT NOT NULL DEFAULT 'youtube',
+    niche            TEXT NOT NULL,
+    title            TEXT NOT NULL,
+    description      TEXT DEFAULT '',
+    channel          TEXT DEFAULT '',
+    thumbnail_url    TEXT DEFAULT '',
+    published_at     TEXT DEFAULT '',
+    views            INTEGER DEFAULT 0,
+    likes            INTEGER DEFAULT 0,
+    comments         INTEGER DEFAULT 0,
+    engagement_rate  REAL DEFAULT 0.0,
+    score            REAL DEFAULT 0.0,
+    target_audience  TEXT DEFAULT 'Analysis pending',
+    strategic_advice TEXT DEFAULT 'Analysis pending',
+    content_gap      TEXT DEFAULT 'Analysis pending',
+    transcript       TEXT DEFAULT '',
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL
+);
+
+CREATE TABLE pipeline_runs (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at       TEXT NOT NULL,
+    finished_at      TEXT,
+    status           TEXT DEFAULT 'running',
+    videos_ingested  INTEGER DEFAULT 0,
+    videos_processed INTEGER DEFAULT 0,
+    videos_enriched  INTEGER DEFAULT 0,
+    videos_stored    INTEGER DEFAULT 0,
+    elapsed_seconds  REAL,
+    error_message    TEXT,
+    triggered_by     TEXT DEFAULT 'scheduler'
+);
+```
 
 ---
 
@@ -313,50 +309,31 @@ All settings managed via `.env` with Pydantic validation:
 
 ---
 
-## Limitations and Assumptions
-
-| Limitation | Impact | Mitigation |
-|-----------|--------|------------|
-| YouTube API quota (10K units/day) | Limits to ~100 searches/day | Pipeline batches efficiently, results cached in DB |
-| YouTube transcript IP rate limiting | Aggressive fetching gets blocked | 1-2s delay between requests, backfill script for recovery |
-| Reddit API pending approval | Reddit ingestion ready but inactive | System gracefully skips Reddit when credentials absent |
-| SQLite single-writer | Only one pipeline can run at a time | Database-level mutex lock prevents concurrent runs |
-| Groq rate limits | May timeout on large batches | Circuit breaker pattern, selective enrichment (top N per niche only) |
-| No real-time streaming | Data updates daily, not live | Sufficient for content strategy decisions |
-
----
-
-## Testing
-
-```bash
-# Run all tests
-python -m pytest tests/ -v
-
-# Run specific test module
-python -m pytest tests/test_reddit_ingestion.py -v
-
-# Run API integration test
-python test_api.py
-```
-
-**Test coverage:** 19+ test cases across 5 modules covering scoring logic, database operations, AI enrichment, API endpoints, and Reddit integration.
-
----
-
 ## Tech Stack
 
 | Layer | Technology | Purpose |
 |-------|-----------|---------|
 | **Backend** | Python 3.11+, FastAPI | REST API with auto-generated OpenAPI docs |
-| **Frontend** | React 19, Vite | Interactive dashboard with dark/light mode |
 | **Database** | SQLite (WAL mode) | Embedded, indexed, migration-safe storage |
 | **AI** | Groq API (Llama 3.3 70B) | Content analysis and strategic insights |
-| **Data** | YouTube Data API v3 | Video metadata and search |
-| **Data** | Reddit OAuth2 API | Post metadata and subreddit search |
+| **Data Sources** | YouTube Data API v3, Reddit OAuth2 | Video/post metadata and search |
 | **Transcripts** | youtube-transcript-api | Caption extraction (no API key needed) |
-| **PDF** | jsPDF + jspdf-autotable | Branded report generation |
-| **Scheduling** | schedule library | Daily automated pipeline runs |
-| **Validation** | Pydantic v2 | Type-safe config, models, and API responses |
+| **Testing** | pytest (106 tests) | Automated test suite with CI |
+| **CI/CD** | GitHub Actions | Tests on push/PR across Python 3.11-3.13 |
+| **Deployment** | Docker, AWS Elastic Beanstalk | Production backend hosting |
+| **Frontend** *(bonus)* | React 19, Vite | Interactive dashboard with dark/light theme |
+
+---
+
+## Limitations and Assumptions
+
+| Limitation | Impact | Mitigation |
+|-----------|--------|------------|
+| YouTube API quota (10K units/day) | ~100 searches/day | Pipeline batches efficiently, results cached in DB |
+| YouTube transcript rate limiting | Aggressive fetching gets blocked | Throttled requests (1-2s delay), backfill recovery script |
+| Reddit API pending approval | Reddit ingestion ready but may be inactive | System gracefully skips Reddit when credentials absent |
+| SQLite single-writer | Only one pipeline can run at a time | Database-level mutex lock prevents concurrent runs |
+| Groq rate limits | May fail on large batches | Circuit breaker pattern, selective enrichment (top N only) |
 
 ---
 
