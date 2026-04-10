@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { api } from '../api/client';
 
@@ -8,11 +8,19 @@ function fmt(n) {
   return String(n);
 }
 
+function wordCount(text) {
+  if (!text) return 0;
+  return text.trim().split(/\s+/).filter(Boolean).length;
+}
+
 export default function VideoDetail() {
   const { id } = useParams();
   const [video, setVideo] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [transcriptExpanded, setTranscriptExpanded] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     api
@@ -22,11 +30,52 @@ export default function VideoDetail() {
       .finally(() => setLoading(false));
   }, [id]);
 
+  // Highlight search matches in transcript
+  const highlightedTranscript = useMemo(() => {
+    if (!video?.transcript || !searchTerm.trim()) return null;
+    const term = searchTerm.trim();
+    const regex = new RegExp(`(${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+    const parts = video.transcript.split(regex);
+    return parts.map((part, i) =>
+      regex.test(part)
+        ? <mark key={i} style={{ background: '#f59e0b33', color: '#f59e0b', borderRadius: 2, padding: '0 2px' }}>{part}</mark>
+        : part
+    );
+  }, [video?.transcript, searchTerm]);
+
+  const matchCount = useMemo(() => {
+    if (!video?.transcript || !searchTerm.trim()) return 0;
+    const term = searchTerm.trim();
+    const regex = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+    return (video.transcript.match(regex) || []).length;
+  }, [video?.transcript, searchTerm]);
+
+  const handleCopy = async () => {
+    if (!video?.transcript) return;
+    try {
+      await navigator.clipboard.writeText(video.transcript);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Fallback for older browsers
+      const ta = document.createElement('textarea');
+      ta.value = video.transcript;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
   if (loading) return <div className="loading"><div className="spinner"></div>Loading video...</div>;
   if (error) return <div className="card" style={{ color: '#ef4444' }}>Error: {error}</div>;
   if (!video) return null;
 
   const isPending = (val) => !val || val === 'Analysis pending';
+  const wc = wordCount(video.transcript);
+  const charCount = video.transcript?.length || 0;
 
   return (
     <>
@@ -119,33 +168,96 @@ export default function VideoDetail() {
 
       {/* Transcript */}
       <div className="card" style={{ marginBottom: '1.5rem' }}>
-        <div className="card-header">
-          <span className="card-title">📝 Transcript</span>
-          {video.transcript ? (
-            <span className="badge badge-green">Available</span>
-          ) : (
-            <span className="badge badge-orange">
-              {video.platform === 'reddit' ? 'N/A (Text post)' : 'Not available'}
-            </span>
+        <div className="card-header" style={{ flexWrap: 'wrap', gap: '0.5rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: '1 1 auto' }}>
+            <span className="card-title">📝 Transcript</span>
+            {video.transcript ? (
+              <>
+                <span className="badge badge-green">Available</span>
+                <span style={{ fontSize: '0.7rem', color: '#8b90a0' }}>
+                  {wc.toLocaleString()} words • {charCount.toLocaleString()} chars
+                </span>
+              </>
+            ) : (
+              <span className="badge badge-orange">
+                {video.platform === 'reddit' ? 'N/A (Text post)' : 'Not available'}
+              </span>
+            )}
+          </div>
+          {video.transcript && (
+            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+              <button
+                onClick={handleCopy}
+                className="btn btn-secondary"
+                style={{ fontSize: '0.75rem', padding: '4px 10px' }}
+              >
+                {copied ? '✓ Copied!' : '📋 Copy'}
+              </button>
+              <button
+                onClick={() => setTranscriptExpanded(!transcriptExpanded)}
+                className="btn btn-secondary"
+                style={{ fontSize: '0.75rem', padding: '4px 10px' }}
+              >
+                {transcriptExpanded ? '▲ Collapse' : '▼ Expand'}
+              </button>
+            </div>
           )}
         </div>
+
+        {video.transcript && (
+          <div style={{ marginBottom: '0.75rem' }}>
+            <div style={{ position: 'relative' }}>
+              <input
+                type="text"
+                placeholder="Search in transcript..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="select-input"
+                style={{
+                  width: '100%',
+                  padding: '8px 12px',
+                  fontSize: '0.8125rem',
+                  background: 'var(--color-surface, #1a1d28)',
+                  border: '1px solid var(--color-border, #2a2e3b)',
+                  borderRadius: 8,
+                  color: 'var(--color-text, #e8eaf0)',
+                }}
+              />
+              {searchTerm && (
+                <span style={{
+                  position: 'absolute',
+                  right: 12,
+                  top: '50%',
+                  transform: 'translateY(-50%)',
+                  fontSize: '0.7rem',
+                  color: matchCount > 0 ? '#34d399' : '#ef4444',
+                  fontWeight: 600,
+                }}>
+                  {matchCount} match{matchCount !== 1 ? 'es' : ''}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
         {video.transcript ? (
           <div style={{
             color: 'var(--color-text-secondary, #8b90a0)',
             lineHeight: 1.8,
             fontSize: '0.8125rem',
-            maxHeight: 300,
-            overflowY: 'auto',
+            maxHeight: transcriptExpanded ? 'none' : 300,
+            overflowY: transcriptExpanded ? 'visible' : 'auto',
             paddingRight: 8,
             whiteSpace: 'pre-wrap',
+            transition: 'max-height 0.3s ease',
           }}>
-            {video.transcript}
+            {highlightedTranscript || video.transcript}
           </div>
         ) : (
           <p style={{ color: 'var(--color-text-muted, #5e6375)', fontStyle: 'italic', fontSize: '0.8125rem' }}>
             {video.platform === 'reddit'
               ? 'Transcripts are not applicable for Reddit posts.'
-              : 'No transcript available for this video. Captions may be disabled.'}
+              : 'No transcript available for this video. Captions may be disabled or not yet extracted.'}
           </p>
         )}
       </div>
@@ -162,6 +274,15 @@ export default function VideoDetail() {
             <tr>
               <td style={{ fontWeight: 600 }}>Published</td>
               <td>{video.published_at ? new Date(video.published_at).toLocaleDateString('de-DE', { year: 'numeric', month: 'long', day: 'numeric' }) : '—'}</td>
+            </tr>
+            <tr>
+              <td style={{ fontWeight: 600 }}>Transcript</td>
+              <td>
+                {video.transcript
+                  ? <span style={{ color: '#34d399' }}>✓ {wc.toLocaleString()} words extracted</span>
+                  : <span style={{ color: '#5e6375' }}>Not available</span>
+                }
+              </td>
             </tr>
             <tr>
               <td style={{ fontWeight: 600 }}>Source Link</td>

@@ -32,6 +32,7 @@ from queries import (
     get_top_videos_per_niche,
     get_video_by_id,
     get_video_stats,
+    get_transcript_stats,
 )
 
 logger = logging.getLogger(__name__)
@@ -141,6 +142,7 @@ class VideoDetailResponse(BaseModel):
     target_audience: Optional[str] = None
     strategic_advice: Optional[str] = None
     content_gap: Optional[str] = None
+    transcript: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -189,6 +191,15 @@ class StatsResponse(BaseModel):
     earliest_video: Optional[str] = None
     latest_video: Optional[str] = None
     niche_stats: Optional[Dict[str, Any]] = None
+    platform_stats: Optional[Dict[str, Any]] = None
+
+
+class TranscriptStatsResponse(BaseModel):
+    total_youtube: int = 0
+    with_transcript: int = 0
+    without_transcript: int = 0
+    coverage_pct: float = 0.0
+    niche_breakdown: Optional[List[Dict[str, Any]]] = None
 
 
 class TopVideosResponse(BaseModel):
@@ -409,6 +420,23 @@ async def stats() -> StatsResponse:
         raise HTTPException(status_code=500, detail="Internal query error")
 
     return StatsResponse(**data)
+
+
+@app.get(
+    "/stats/transcripts",
+    response_model=TranscriptStatsResponse,
+    summary="Transcript extraction coverage",
+    tags=["System"],
+)
+async def transcript_stats() -> TranscriptStatsResponse:
+    """Return statistics on transcript extraction coverage."""
+    try:
+        data = get_transcript_stats()
+    except Exception as exc:
+        logger.error("Error fetching transcript stats: %s", exc)
+        raise HTTPException(status_code=500, detail="Internal query error")
+
+    return TranscriptStatsResponse(**data)
 
 
 # ---------------------------------------------------------------------------

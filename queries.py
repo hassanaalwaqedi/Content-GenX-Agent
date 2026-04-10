@@ -186,3 +186,54 @@ def get_video_by_id(video_id: str) -> Optional[Dict[str, Any]]:
 
     logger.info("get_video_by_id('%s'): not found.", video_id)
     return None
+
+
+def get_transcript_stats() -> Dict[str, Any]:
+    """
+    Return transcript coverage statistics.
+
+    Provides counts of videos with/without transcripts,
+    coverage percentage, and per-niche breakdown.
+    """
+    query = """
+        SELECT
+            COUNT(*) AS total_youtube,
+            SUM(CASE WHEN transcript IS NOT NULL AND transcript != '' THEN 1 ELSE 0 END) AS with_transcript,
+            SUM(CASE WHEN transcript IS NULL OR transcript = '' THEN 1 ELSE 0 END) AS without_transcript,
+            ROUND(
+                100.0 * SUM(CASE WHEN transcript IS NOT NULL AND transcript != '' THEN 1 ELSE 0 END) / MAX(COUNT(*), 1),
+                1
+            ) AS coverage_pct
+        FROM videos
+        WHERE platform = 'youtube';
+    """
+    niche_query = """
+        SELECT
+            niche,
+            COUNT(*) AS total,
+            SUM(CASE WHEN transcript IS NOT NULL AND transcript != '' THEN 1 ELSE 0 END) AS with_transcript
+        FROM videos
+        WHERE platform = 'youtube'
+        GROUP BY niche
+        ORDER BY total DESC;
+    """
+
+    with get_connection() as conn:
+        row = conn.execute(query).fetchone()
+        niche_rows = conn.execute(niche_query).fetchall()
+
+    result = dict(row) if row else {
+        "total_youtube": 0,
+        "with_transcript": 0,
+        "without_transcript": 0,
+        "coverage_pct": 0.0,
+    }
+    result["niche_breakdown"] = [
+        {
+            "niche": r["niche"],
+            "total": r["total"],
+            "with_transcript": r["with_transcript"],
+        }
+        for r in niche_rows
+    ]
+    return result

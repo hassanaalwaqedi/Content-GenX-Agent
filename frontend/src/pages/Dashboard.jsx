@@ -13,14 +13,16 @@ function formatNumber(n) {
 export default function Dashboard() {
   const [stats, setStats] = useState(null);
   const [health, setHealth] = useState(null);
+  const [transcriptStats, setTranscriptStats] = useState(null);
   const [nicheData, setNicheData] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    Promise.all([api.getStats(), api.getHealth()])
-      .then(([s, h]) => {
+    Promise.all([api.getStats(), api.getHealth(), api.getTranscriptStats()])
+      .then(([s, h, ts]) => {
         setStats(s);
         setHealth(h);
+        setTranscriptStats(ts);
         // Build niche distribution from niche_stats
         if (s.niche_stats) {
           const data = Object.entries(s.niche_stats).map(([name, info]) => ({
@@ -43,6 +45,9 @@ export default function Dashboard() {
       </div>
     );
   }
+
+  const coveragePct = transcriptStats?.coverage_pct || 0;
+  const coverageColor = coveragePct >= 50 ? '#34d399' : coveragePct >= 20 ? '#f59e0b' : '#ef4444';
 
   return (
     <>
@@ -76,6 +81,15 @@ export default function Dashboard() {
           <div className="kpi-sub">
             <span className={`health-dot ${health?.status === 'healthy' ? 'online' : 'offline'}`}></span>
             Database {health?.database || 'unknown'}
+          </div>
+        </div>
+        <div className="kpi-card">
+          <div className="kpi-label">📝 Transcript Coverage</div>
+          <div className="kpi-value" style={{ color: coverageColor }}>
+            {coveragePct}%
+          </div>
+          <div className="kpi-sub">
+            {transcriptStats?.with_transcript || 0} / {transcriptStats?.total_youtube || 0} videos
           </div>
         </div>
         <div className="kpi-card">
@@ -139,6 +153,59 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+
+      {/* Transcript Coverage by Niche */}
+      {transcriptStats?.niche_breakdown?.length > 0 && (
+        <div className="card" style={{ marginTop: 'var(--space-xl)' }}>
+          <div className="card-header">
+            <span className="card-title">📝 Transcript Coverage by Niche</span>
+            <span className="badge badge-blue">{transcriptStats.with_transcript} transcripts extracted</span>
+          </div>
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Niche</th>
+                <th>Videos</th>
+                <th>With Transcript</th>
+                <th>Coverage</th>
+              </tr>
+            </thead>
+            <tbody>
+              {transcriptStats.niche_breakdown.map((nb) => {
+                const pct = nb.total > 0 ? ((nb.with_transcript / nb.total) * 100).toFixed(1) : '0.0';
+                const barColor = pct >= 50 ? '#34d399' : pct >= 20 ? '#f59e0b' : '#ef4444';
+                return (
+                  <tr key={nb.niche}>
+                    <td>{nb.niche}</td>
+                    <td className="number-cell">{nb.total}</td>
+                    <td className="number-cell">{nb.with_transcript}</td>
+                    <td>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <div style={{
+                          width: 80,
+                          height: 6,
+                          background: 'var(--color-surface, #1e2230)',
+                          borderRadius: 3,
+                          overflow: 'hidden',
+                        }}>
+                          <div style={{
+                            width: `${Math.min(pct, 100)}%`,
+                            height: '100%',
+                            background: barColor,
+                            borderRadius: 3,
+                            transition: 'width 0.5s ease',
+                          }} />
+                        </div>
+                        <span style={{ fontSize: '0.75rem', color: barColor, fontWeight: 600 }}>{pct}%</span>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {/* Niches Table */}
       {health?.niches?.length > 0 && (

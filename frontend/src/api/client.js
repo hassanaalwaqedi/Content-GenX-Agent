@@ -35,4 +35,5 @@ export const api = {
     }),
   getPipelineHistory: (limit = 10) =>
     request(`/pipeline/history?limit=${limit}`),
+  getTranscriptStats: () => request('/stats/transcripts'),
 };

@@ -114,13 +114,17 @@ def run_pipeline(triggered_by: str = "manual") -> Dict[str, Any]:
         # ---- Step 4: Transcript Extraction ----------------------------------
         logger.info("Step 4/5 -- Extracting transcripts (YouTube only)...")
         transcript_count = 0
-        for video in enriched:
+        for idx, video in enumerate(enriched):
             vid_id = video.get("video_id", "")
             if vid_id and not vid_id.startswith("reddit_"):
                 transcript = fetch_transcript(vid_id)
                 if transcript:
                     video["transcript"] = transcript
                     transcript_count += 1
+                # Throttle to avoid YouTube IP blocking
+                if idx < len(enriched) - 1:
+                    import time
+                    time.sleep(1.0)
         result["transcripts"] = transcript_count
         logger.info("Transcripts extracted: %d/%d videos.", transcript_count, len(enriched))
 
