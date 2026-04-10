@@ -198,11 +198,11 @@ def get_transcript_stats() -> Dict[str, Any]:
     query = """
         SELECT
             COUNT(*) AS total_youtube,
-            SUM(CASE WHEN transcript IS NOT NULL AND transcript != '' THEN 1 ELSE 0 END) AS with_transcript,
-            SUM(CASE WHEN transcript IS NULL OR transcript = '' THEN 1 ELSE 0 END) AS without_transcript,
+            COALESCE(SUM(CASE WHEN transcript IS NOT NULL AND transcript != '' THEN 1 ELSE 0 END), 0) AS with_transcript,
+            COALESCE(SUM(CASE WHEN transcript IS NULL OR transcript = '' THEN 1 ELSE 0 END), 0) AS without_transcript,
             CASE WHEN COUNT(*) > 0 THEN
                 ROUND(
-                    100.0 * SUM(CASE WHEN transcript IS NOT NULL AND transcript != '' THEN 1 ELSE 0 END) / COUNT(*),
+                    100.0 * COALESCE(SUM(CASE WHEN transcript IS NOT NULL AND transcript != '' THEN 1 ELSE 0 END), 0) / COUNT(*),
                     1
                 )
             ELSE 0.0 END AS coverage_pct
