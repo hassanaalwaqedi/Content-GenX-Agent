@@ -1,4 +1,4 @@
-import { NavLink, Outlet } from 'react-router-dom';
+import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { useState, useEffect } from 'react';
 
 const navItems = [
@@ -17,11 +17,18 @@ function getInitialTheme() {
 
 export default function Layout() {
   const [theme, setTheme] = useState(getInitialTheme);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const location = useLocation();
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('genx-theme', theme);
   }, [theme]);
+
+  // Close mobile menu on navigation
+  useEffect(() => {
+    setMenuOpen(false);
+  }, [location.pathname]);
 
   const toggleTheme = () => {
     setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
@@ -29,7 +36,22 @@ export default function Layout() {
 
   return (
     <div className="app-layout">
-      <aside className="sidebar">
+      {/* Mobile hamburger button */}
+      <button
+        className="mobile-menu-toggle"
+        onClick={() => setMenuOpen(!menuOpen)}
+        aria-label="Toggle menu"
+      >
+        {menuOpen ? '✕' : '☰'}
+      </button>
+
+      {/* Mobile overlay */}
+      <div
+        className={`sidebar-overlay${menuOpen ? ' show' : ''}`}
+        onClick={() => setMenuOpen(false)}
+      />
+
+      <aside className={`sidebar${menuOpen ? ' open' : ''}`}>
         <div className="sidebar-brand">
           <div className="brand-logo-row">
             <img src="/logo.png" alt="GenX Logo" className="brand-logo" />
