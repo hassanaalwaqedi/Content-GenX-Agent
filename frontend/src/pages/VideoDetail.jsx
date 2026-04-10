@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { api } from '../api/client';
+import { exportTranscriptPDF } from '../api/export';
 
 function fmt(n) {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
@@ -186,6 +187,19 @@ export default function VideoDetail() {
           </div>
           {video.transcript && (
             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+              <button
+                onClick={() => exportTranscriptPDF(video)}
+                className="btn btn-secondary"
+                style={{
+                  fontSize: '0.75rem',
+                  padding: '4px 10px',
+                  background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+                  color: '#fff',
+                  border: 'none',
+                }}
+              >
+                📄 Download PDF
+              </button>
               <button
                 onClick={handleCopy}
                 className="btn btn-secondary"
