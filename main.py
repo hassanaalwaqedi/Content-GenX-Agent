@@ -24,6 +24,7 @@ from ingestion import ingest_videos
 from reddit_ingestion import ingest_reddit_posts
 from processing import process_videos
 from ai_enrichment import enrich_videos
+from transcripts import fetch_transcript
 
 logger = logging.getLogger(__name__)
 
@@ -105,13 +106,26 @@ def run_pipeline(triggered_by: str = "manual") -> Dict[str, Any]:
             return result
 
         # ---- Step 3: AI Enrichment ------------------------------------------
-        logger.info("Step 3/4 -- Enriching with AI metadata...")
+        logger.info("Step 3/5 -- Enriching with AI metadata...")
         enriched = enrich_videos(processed)
         result["enriched"] = len(enriched)
         logger.info("Enrichment complete: %d videos enriched.", len(enriched))
 
-        # ---- Step 4: Store --------------------------------------------------
-        logger.info("Step 4/4 -- Storing in database...")
+        # ---- Step 4: Transcript Extraction ----------------------------------
+        logger.info("Step 4/5 -- Extracting transcripts (YouTube only)...")
+        transcript_count = 0
+        for video in enriched:
+            vid_id = video.get("video_id", "")
+            if vid_id and not vid_id.startswith("reddit_"):
+                transcript = fetch_transcript(vid_id)
+                if transcript:
+                    video["transcript"] = transcript
+                    transcript_count += 1
+        result["transcripts"] = transcript_count
+        logger.info("Transcripts extracted: %d/%d videos.", transcript_count, len(enriched))
+
+        # ---- Step 5: Store --------------------------------------------------
+        logger.info("Step 5/5 -- Storing in database...")
         stored = insert_videos(enriched)
         result["stored"] = stored
         logger.info("Storage complete: %d videos upserted.", stored)

@@ -111,11 +111,44 @@ export default function VideoDetail() {
           <div className="card-header">
             <span className="card-title">Description</span>
           </div>
-          <p style={{ color: '#8b90a0', lineHeight: 1.8, whiteSpace: 'pre-wrap', fontSize: '0.8125rem' }}>
+          <p style={{ color: 'var(--color-text-secondary, #8b90a0)', lineHeight: 1.8, whiteSpace: 'pre-wrap', fontSize: '0.8125rem' }}>
             {video.description}
           </p>
         </div>
       )}
+
+      {/* Transcript */}
+      <div className="card" style={{ marginBottom: '1.5rem' }}>
+        <div className="card-header">
+          <span className="card-title">📝 Transcript</span>
+          {video.transcript ? (
+            <span className="badge badge-green">Available</span>
+          ) : (
+            <span className="badge badge-orange">
+              {video.platform === 'reddit' ? 'N/A (Text post)' : 'Not available'}
+            </span>
+          )}
+        </div>
+        {video.transcript ? (
+          <div style={{
+            color: 'var(--color-text-secondary, #8b90a0)',
+            lineHeight: 1.8,
+            fontSize: '0.8125rem',
+            maxHeight: 300,
+            overflowY: 'auto',
+            paddingRight: 8,
+            whiteSpace: 'pre-wrap',
+          }}>
+            {video.transcript}
+          </div>
+        ) : (
+          <p style={{ color: 'var(--color-text-muted, #5e6375)', fontStyle: 'italic', fontSize: '0.8125rem' }}>
+            {video.platform === 'reddit'
+              ? 'Transcripts are not applicable for Reddit posts.'
+              : 'No transcript available for this video. Captions may be disabled.'}
+          </p>
+        )}
+      </div>
 
       {/* Metadata */}
       <div className="card">
@@ -125,14 +158,20 @@ export default function VideoDetail() {
         <table className="data-table">
           <tbody>
             <tr><td style={{ fontWeight: 600, width: 160 }}>Video ID</td><td>{video.video_id}</td></tr>
-            <tr><td style={{ fontWeight: 600 }}>Platform</td><td>{video.platform}</td></tr>
+            <tr><td style={{ fontWeight: 600 }}>Platform</td><td>{video.platform === 'reddit' ? '💬 Reddit' : '🎬 YouTube'}</td></tr>
             <tr>
               <td style={{ fontWeight: 600 }}>Published</td>
               <td>{video.published_at ? new Date(video.published_at).toLocaleDateString('de-DE', { year: 'numeric', month: 'long', day: 'numeric' }) : '—'}</td>
             </tr>
             <tr>
-              <td style={{ fontWeight: 600 }}>YouTube Link</td>
-              <td><a href={`https://www.youtube.com/watch?v=${video.video_id}`} target="_blank" rel="noopener noreferrer">Open on YouTube ↗</a></td>
+              <td style={{ fontWeight: 600 }}>Source Link</td>
+              <td>
+                {video.platform === 'reddit' ? (
+                  <a href={`https://www.reddit.com/search/?q=${encodeURIComponent(video.title)}`} target="_blank" rel="noopener noreferrer">Search on Reddit ↗</a>
+                ) : (
+                  <a href={`https://www.youtube.com/watch?v=${video.video_id}`} target="_blank" rel="noopener noreferrer">Open on YouTube ↗</a>
+                )}
+              </td>
             </tr>
             <tr><td style={{ fontWeight: 600 }}>Last Updated</td><td>{video.updated_at ? new Date(video.updated_at).toLocaleString('de-DE') : '—'}</td></tr>
           </tbody>

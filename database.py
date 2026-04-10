@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS videos (
     target_audience TEXT DEFAULT 'Analysis pending',
     strategic_advice TEXT DEFAULT 'Analysis pending',
     content_gap     TEXT DEFAULT 'Analysis pending',
+    transcript      TEXT DEFAULT '',
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
@@ -70,8 +71,8 @@ INSERT INTO videos (
     video_id, platform, niche, title, views, likes, comments,
     engagement_rate, score, published_at, channel, thumbnail_url,
     description, target_audience, strategic_advice, content_gap,
-    created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    transcript, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(video_id) DO UPDATE SET
     views             = excluded.views,
     likes             = excluded.likes,
@@ -84,6 +85,7 @@ ON CONFLICT(video_id) DO UPDATE SET
     target_audience   = excluded.target_audience,
     strategic_advice  = excluded.strategic_advice,
     content_gap       = excluded.content_gap,
+    transcript        = CASE WHEN excluded.transcript != '' THEN excluded.transcript ELSE videos.transcript END,
     updated_at        = excluded.updated_at;
 """
 
@@ -137,6 +139,7 @@ _COLUMN_MIGRATIONS = [
     ("target_audience", "TEXT DEFAULT 'Analysis pending'"),
     ("strategic_advice", "TEXT DEFAULT 'Analysis pending'"),
     ("content_gap", "TEXT DEFAULT 'Analysis pending'"),
+    ("transcript", "TEXT DEFAULT ''"),
 ]
 
 
@@ -204,6 +207,7 @@ def insert_videos(videos: List[dict]) -> int:
                         v.get("target_audience", "Analysis pending"),
                         v.get("strategic_advice", "Analysis pending"),
                         v.get("content_gap", "Analysis pending"),
+                        v.get("transcript", ""),
                         now,  # created_at: always server timestamp
                         now,  # updated_at: always refreshed
                     ),

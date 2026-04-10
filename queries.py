@@ -172,7 +172,7 @@ def get_video_by_id(video_id: str) -> Optional[Dict[str, Any]]:
             video_id, platform, niche, title, views, likes, comments,
             engagement_rate, score, published_at, channel, thumbnail_url,
             description, target_audience, strategic_advice, content_gap,
-            created_at, updated_at
+            transcript, created_at, updated_at
         FROM videos
         WHERE video_id = ?;
     """
