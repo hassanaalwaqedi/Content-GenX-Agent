@@ -145,15 +145,8 @@ class Settings(BaseSettings):
 
     # ---- Security -----------------------------------------------------------
     cors_allowed_origins: List[str] = Field(
-        default=[
-            "http://localhost:3000",
-            "http://localhost:5173",
-            "http://localhost:8000",
-            "https://genxagent-f420f.web.app",
-            "https://genxagent-f420f.firebaseapp.com",
-            "https://content-genx-agent.onrender.com",
-        ],
-        description="Allowed CORS origins. Set to ['*'] only for development.",
+        default=["*"],
+        description="Allowed CORS origins. Set to ['*'] to allow all origins.",
     )
     pipeline_api_key: str = Field(
         default="",
