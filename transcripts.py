@@ -100,6 +100,77 @@ def fetch_transcript(video_id: str, *, max_length: int = _MAX_TRANSCRIPT_LENGTH)
         return ""
 
 
+def fetch_transcript_segments(video_id: str) -> List[dict]:
+    """
+    Fetch raw transcript segments with timing data for a YouTube video.
+
+    Returns a list of dicts with keys: text, start, duration.
+    Returns empty list if unavailable.
+    """
+    if video_id.startswith("reddit_"):
+        return []
+
+    try:
+        transcript_list = _api.list(video_id)
+
+        fetched = None
+        try:
+            fetched = transcript_list.find_manually_created_transcript(_PREFERRED_LANGUAGES)
+        except NoTranscriptFound:
+            pass
+
+        if fetched is None:
+            try:
+                fetched = transcript_list.find_generated_transcript(_PREFERRED_LANGUAGES)
+            except NoTranscriptFound:
+                logger.debug("No transcript segments available for video %s.", video_id)
+                return []
+
+        result = fetched.fetch()
+        segments = [
+            {
+                "text": snippet.text,
+                "start": getattr(snippet, "start", 0),
+                "duration": getattr(snippet, "duration", 0),
+            }
+            for snippet in result.snippets
+        ]
+        logger.info(
+            "Transcript segments fetched for %s (%d segments).",
+            video_id, len(segments),
+        )
+        return segments
+
+    except (TranscriptsDisabled, VideoUnavailable):
+        return []
+    except Exception as exc:
+        logger.warning("Failed to fetch transcript segments for %s: %s", video_id, exc)
+        return []
+
+
+def extract_first_30s(transcript_segments: List[dict]) -> str:
+    """
+    Extract the text from the first 30 seconds of transcript segments.
+
+    Args:
+        transcript_segments: List of dicts with 'text', 'start', 'duration' keys.
+
+    Returns:
+        Concatenated text from segments within the first 30 seconds.
+    """
+    duration = 0
+    result = []
+
+    for segment in transcript_segments:
+        result.append(segment["text"])
+        duration += segment.get("duration", 0)
+
+        if duration >= 30:
+            break
+
+    return " ".join(result)
+
+
 def fetch_transcripts_batch(video_ids: List[str]) -> dict[str, str]:
     """
     Fetch transcripts for multiple videos.

@@ -17,14 +17,17 @@ from __future__ import annotations
 import logging
 import math
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from ingestion import RawVideo
+from ingestion import RawVideo, PipelineConfig
 from config import get_settings
 
 logger = logging.getLogger(__name__)
+
+# Default regions that indicate a global run (not region-specific)
+_GLOBAL_REGION_SET = {"US", "GB", "CA", "DE", "FR", "AU", "AE"}
 
 
 # ---------------------------------------------------------------------------
@@ -33,9 +36,6 @@ logger = logging.getLogger(__name__)
 class ProcessedVideo(BaseModel):
     """
     Validated, scored video record ready for database insertion.
-
-    Using Pydantic here provides type safety at the processing→database
-    boundary and catches data quality issues before they reach storage.
     """
     video_id: str
     platform: str = "youtube"
@@ -50,6 +50,8 @@ class ProcessedVideo(BaseModel):
     comments: int = 0
     engagement_rate: float = Field(default=0.0, ge=0.0)
     score: float = Field(default=0.0, ge=0.0)
+    source_region: str = ""
+    content_type: str = "all"
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to dict for database insertion."""
@@ -74,7 +76,6 @@ def _recency_factor(published_at: str, *, half_life_days: float = 30.0) -> float
     A video published ``half_life_days`` ago scores ~0.5.
     """
     try:
-        # YouTube timestamps are ISO-8601 with trailing 'Z'
         pub_dt = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
     except (ValueError, AttributeError):
         return 0.0
@@ -96,20 +97,33 @@ def _normalize(value: float, min_val: float, max_val: float) -> float:
 # ---------------------------------------------------------------------------
 # Core processing pipeline
 # ---------------------------------------------------------------------------
-def process_videos(raw_videos: List[RawVideo]) -> List[Dict[str, Any]]:
+def process_videos(
+    raw_videos: List[RawVideo],
+    config: Optional[PipelineConfig] = None,
+) -> List[Dict[str, Any]]:
     """
-    Full processing pipeline:
-      1. Validate & clean
-      2. Compute engagement_rate
-      3. Compute composite score
-      4. Filter by thresholds
-      5. Sort by score descending
+    Full processing pipeline with dynamic threshold relaxation.
 
-    Returns a list of validated ProcessedVideo dicts ready for storage.
+    When a region-specific config is detected (fewer than 4 regions),
+    thresholds are relaxed to min_views=500, min_engagement=0.01
+    to avoid filtering out niche regional content.
     """
     settings = get_settings()
     weights = settings.scoring_weights
     thresholds = settings.filter_thresholds
+
+    # Part 2: Dynamic threshold relaxation
+    min_views = thresholds.min_views
+    min_engagement = thresholds.min_engagement_rate
+
+    if config and len(config.regions) < len(_GLOBAL_REGION_SET):
+        # Region-specific run — relax filters
+        min_views = min(min_views, 500)
+        min_engagement = min(min_engagement, 0.01)
+        logger.info(
+            "Region-specific run (%d regions) — relaxed thresholds: min_views=%d, min_engagement=%.3f",
+            len(config.regions), min_views, min_engagement,
+        )
 
     if not raw_videos:
         logger.warning("No raw videos to process.")
@@ -119,7 +133,6 @@ def process_videos(raw_videos: List[RawVideo]) -> List[Dict[str, Any]]:
     enriched: List[Dict[str, Any]] = []
     for rv in raw_videos:
         if not rv.video_id or not rv.title:
-            logger.debug("Skipping invalid video (missing id/title): %s", rv)
             continue
 
         engagement = _safe_engagement_rate(rv.views, rv.likes, rv.comments)
@@ -130,13 +143,13 @@ def process_videos(raw_videos: List[RawVideo]) -> List[Dict[str, Any]]:
                 **rv.to_dict(),
                 "engagement_rate": round(engagement, 6),
                 "recency_factor": recency,
-                "log_views": math.log1p(rv.views),  # log(1 + views)
+                "log_views": math.log1p(rv.views),
             }
         )
 
     logger.info("Enriched %d / %d videos.", len(enriched), len(raw_videos))
 
-    # ---- Step 2: Compute score (needs global min/max for normalization) ---
+    # ---- Step 2: Compute score ---
     log_views_vals = [v["log_views"] for v in enriched]
     eng_vals = [v["engagement_rate"] for v in enriched]
 
@@ -146,7 +159,7 @@ def process_videos(raw_videos: List[RawVideo]) -> List[Dict[str, Any]]:
     for v in enriched:
         norm_lv = _normalize(v["log_views"], lv_min, lv_max)
         norm_eng = _normalize(v["engagement_rate"], eng_min, eng_max)
-        recency = v["recency_factor"]  # already in [0, 1]
+        recency = v["recency_factor"]
 
         v["score"] = round(
             weights.views * norm_lv
@@ -155,20 +168,16 @@ def process_videos(raw_videos: List[RawVideo]) -> List[Dict[str, Any]]:
             6,
         )
 
-    # ---- Step 3: Filter ----------------------------------------------------
+    # ---- Step 3: Filter with dynamic thresholds ---
     before_filter = len(enriched)
     filtered = [
-        v
-        for v in enriched
-        if v["views"] >= thresholds.min_views
-        and v["engagement_rate"] >= thresholds.min_engagement_rate
+        v for v in enriched
+        if v["views"] >= min_views
+        and v["engagement_rate"] >= min_engagement
     ]
     logger.info(
         "Filtered %d -> %d videos (min_views=%d, min_engagement=%.4f).",
-        before_filter,
-        len(filtered),
-        thresholds.min_views,
-        thresholds.min_engagement_rate,
+        before_filter, len(filtered), min_views, min_engagement,
     )
 
     # ---- Step 4: Sort by score desc ----------------------------------------
@@ -177,7 +186,6 @@ def process_videos(raw_videos: List[RawVideo]) -> List[Dict[str, Any]]:
     # ---- Step 5: Validate through Pydantic model ---------------------------
     validated: List[Dict[str, Any]] = []
     for v in filtered:
-        # Remove transient keys before validation
         v.pop("log_views", None)
         v.pop("recency_factor", None)
         try:

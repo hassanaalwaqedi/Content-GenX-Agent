@@ -3,6 +3,8 @@ import { Link } from 'react-router-dom';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { api } from '../api/client';
 import { exportToPDF } from '../api/export';
+import ContentGeneratorModal from '../components/ContentGeneratorModal';
+import { useDataset } from '../context/DatasetContext';
 
 function fmt(n) {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
@@ -10,19 +12,33 @@ function fmt(n) {
   return String(n);
 }
 
+const DEFAULT_THUMBNAIL = 'https://via.placeholder.com/320x180.png?text=No+Thumbnail';
+
 export default function Trending() {
-  const [days, setDays] = useState(30);
+  const { datasetId } = useDataset();
+  const [days, setDays] = useState(90);
   const [videos, setVideos] = useState([]);
   const [loading, setLoading] = useState(true);
+
+  // Transcript modal state
+  const [transcriptData, setTranscriptData] = useState(null);
+  const [transcriptLoading, setTranscriptLoading] = useState(false);
+  const [transcriptError, setTranscriptError] = useState(null);
+
+  // Content generator
+  const [generateVideo, setGenerateVideo] = useState(null);
+
+  // Local filters
+  const [globalFilters, setGlobalFilters] = useState({ region: '', category: '', content_type: '' });
 
   useEffect(() => {
     setLoading(true);
     api
-      .getTrending(days, 30)
+      .getTrending(days, 30, globalFilters, datasetId)
       .then((data) => setVideos(data.videos || []))
       .catch((err) => console.error(err))
       .finally(() => setLoading(false));
-  }, [days]);
+  }, [days, globalFilters, datasetId]);
 
   // Build engagement chart data from top 10
   const chartData = videos.slice(0, 10).map((v, i) => ({
@@ -30,6 +46,25 @@ export default function Trending() {
     engagement: +(v.engagement_rate * 100).toFixed(2),
     views: v.views,
   }));
+
+  const fetchTranscript = async (videoId) => {
+    setTranscriptLoading(true);
+    setTranscriptError(null);
+    setTranscriptData(null);
+    try {
+      const data = await api.fetchTranscript(videoId);
+      setTranscriptData(data);
+    } catch (err) {
+      setTranscriptError(err.message || 'Failed to load transcript');
+    } finally {
+      setTranscriptLoading(false);
+    }
+  };
+
+  const closeModal = () => {
+    setTranscriptData(null);
+    setTranscriptError(null);
+  };
 
   return (
     <>
@@ -49,6 +84,8 @@ export default function Trending() {
           <option value={30}>Last 30 days</option>
           <option value={60}>Last 60 days</option>
           <option value={90}>Last 90 days</option>
+          <option value={180}>Last 180 days</option>
+          <option value={365}>Last 365 days</option>
         </select>
         <span className="badge badge-green">{videos.length} trending</span>
         {videos.length > 0 && (
@@ -113,6 +150,8 @@ export default function Trending() {
                 <th>Engagement</th>
                 <th>Score</th>
                 <th>Published</th>
+                <th>Transcript</th>
+                <th>AI</th>
               </tr>
             </thead>
             <tbody>
@@ -120,11 +159,19 @@ export default function Trending() {
                 <tr key={v.video_id}>
                   <td className="number-cell">{i + 1}</td>
                   <td>
-                    <Link to={`/video/${v.video_id}`} className="title-cell" style={{ color: 'var(--color-text)' }}>
-                      <span title={v.platform === 'reddit' ? 'Reddit' : 'YouTube'} style={{ marginRight: 6 }}>
-                        {v.platform === 'reddit' ? '💬' : '🎬'}
+                    <Link to={`/video/${v.video_id}`} className="title-cell video-title-cell" style={{ color: 'var(--color-text)' }}>
+                      <img
+                        src={v.thumbnail_url || DEFAULT_THUMBNAIL}
+                        alt="thumbnail"
+                        className="video-thumbnail"
+                        onError={(e) => { e.target.src = DEFAULT_THUMBNAIL; }}
+                      />
+                      <span className="video-title-text">
+                        <span title={v.platform === 'reddit' ? 'Reddit' : 'YouTube'} style={{ marginRight: 6 }}>
+                          {v.platform === 'reddit' ? '💬' : '🎬'}
+                        </span>
+                        {v.title}
                       </span>
-                      {v.title}
                     </Link>
                   </td>
                   <td>{v.channel || '—'}</td>
@@ -140,11 +187,90 @@ export default function Trending() {
                   <td style={{ color: '#8b90a0' }}>
                     {v.published_at ? new Date(v.published_at).toLocaleDateString('de-DE') : '—'}
                   </td>
+                  <td>
+                    {v.platform !== 'reddit' && (
+                      <button
+                        className="btn-transcript"
+                        onClick={(e) => { e.preventDefault(); fetchTranscript(v.video_id); }}
+                      >
+                        📝 Transcript
+                      </button>
+                    )}
+                  </td>
+                  <td>
+                    <button
+                      className="btn-transcript"
+                      onClick={(e) => { e.preventDefault(); setGenerateVideo(v); }}
+                      style={{ background: 'var(--color-accent-purple-bg)', color: 'var(--color-accent-purple)' }}
+                    >
+                      ✨ Generate
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+      )}
+
+      {/* Transcript Loading Overlay */}
+      {transcriptLoading && (
+        <div className="transcript-modal-overlay">
+          <div className="transcript-modal">
+            <div className="loading"><div className="spinner"></div>Fetching transcript...</div>
+          </div>
+        </div>
+      )}
+
+      {/* Transcript Error Modal */}
+      {transcriptError && (
+        <div className="transcript-modal-overlay" onClick={closeModal}>
+          <div className="transcript-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="transcript-modal-header">
+              <h3 className="transcript-modal-title">Transcript Unavailable</h3>
+              <button className="transcript-modal-close" onClick={closeModal}>✕</button>
+            </div>
+            <div className="transcript-error">
+              <span style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>⚠️</span>
+              <p>{transcriptError}</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Transcript Data Modal */}
+      {transcriptData && (
+        <div className="transcript-modal-overlay" onClick={closeModal}>
+          <div className="transcript-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="transcript-modal-header">
+              <h3 className="transcript-modal-title">
+                📝 Video Transcript
+                {transcriptData.cached && <span className="badge badge-green" style={{ marginLeft: 8 }}>Cached</span>}
+              </h3>
+              <button className="transcript-modal-close" onClick={closeModal}>✕</button>
+            </div>
+
+            <div className="transcript-section">
+              <h4 className="transcript-section-title">⏱️ First 30 Seconds</h4>
+              <p className="transcript-preview">{transcriptData.transcript_30s || 'N/A'}</p>
+            </div>
+
+            <div className="transcript-section">
+              <h4 className="transcript-section-title">📄 Full Transcript</h4>
+              <div className="transcript-full">
+                {transcriptData.transcript || 'No transcript content.'}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Content Generator Modal */}
+      {generateVideo && (
+        <ContentGeneratorModal
+          video={generateVideo}
+          onClose={() => setGenerateVideo(null)}
+        />
       )}
     </>
   );

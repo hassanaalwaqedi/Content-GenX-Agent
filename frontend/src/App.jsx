@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { DatasetProvider } from './context/DatasetContext';
 import Layout from './components/Layout';
 import Dashboard from './pages/Dashboard';
 import TopVideos from './pages/TopVideos';
@@ -10,16 +11,18 @@ import Pipeline from './pages/Pipeline';
 export default function App() {
   return (
     <BrowserRouter>
-      <Routes>
-        <Route element={<Layout />}>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/videos" element={<TopVideos />} />
-          <Route path="/trending" element={<Trending />} />
-          <Route path="/video/:id" element={<VideoDetail />} />
-          <Route path="/creators" element={<Creators />} />
-          <Route path="/pipeline" element={<Pipeline />} />
-        </Route>
-      </Routes>
+      <DatasetProvider>
+        <Routes>
+          <Route element={<Layout />}>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/videos" element={<TopVideos />} />
+            <Route path="/trending" element={<Trending />} />
+            <Route path="/video/:id" element={<VideoDetail />} />
+            <Route path="/creators" element={<Creators />} />
+            <Route path="/pipeline" element={<Pipeline />} />
+          </Route>
+        </Routes>
+      </DatasetProvider>
     </BrowserRouter>
   );
 }

@@ -1,5 +1,6 @@
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { useState, useEffect } from 'react';
+import DatasetSwitcher from './DatasetSwitcher';
 
 const navItems = [
   { to: '/', icon: '📊', label: 'Dashboard' },
@@ -61,6 +62,7 @@ export default function Layout() {
             </div>
           </div>
         </div>
+        <DatasetSwitcher />
         <nav className="sidebar-nav">
           {navItems.map((item) => (
             <NavLink

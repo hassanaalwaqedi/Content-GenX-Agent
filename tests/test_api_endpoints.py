@@ -91,10 +91,12 @@ class TestStatsEndpoint:
 class TestVideoEndpoints:
     """Tests for video-related endpoints."""
 
-    def test_top_videos_requires_niche(self):
-        """GET /videos/top without niche should return 422 (validation error)."""
+    def test_top_videos_without_niche_returns_all(self):
+        """GET /videos/top without niche should return 200 (returns all categories)."""
         r = client.get("/videos/top")
-        assert r.status_code == 422
+        assert r.status_code == 200
+        data = r.json()
+        assert data["niche"] == "all"
 
     def test_top_videos_empty_niche(self):
         """Valid request but no data should return 200 with empty list."""

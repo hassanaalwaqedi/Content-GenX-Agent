@@ -1,6 +1,7 @@
 /**
  * API client for Content Intelligence Platform.
  * Wraps all backend endpoints with error handling.
+ * All data endpoints support dataset_id for workspace scoping.
  */
 
 const BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
@@ -18,22 +19,124 @@ async function request(endpoint, options = {}) {
   return res.json();
 }
 
+/**
+ * Helper: append dataset_id to URLSearchParams.
+ * - undefined means "use server default" (active dataset)
+ * - null means "all data" (send 0 as sentinel)
+ * - number means "specific dataset"
+ */
+function _appendDatasetId(params, datasetId) {
+  if (datasetId === null) {
+    params.set('dataset_id', '0');
+  } else if (datasetId !== undefined) {
+    params.set('dataset_id', datasetId);
+  }
+}
+
 export const api = {
+  // ---- System ----
   getHealth: () => request('/health'),
-  getStats: () => request('/stats'),
-  getTopVideos: (niche, days = 365, limit = 20) =>
-    request(`/videos/top?niche=${encodeURIComponent(niche)}&days=${days}&limit=${limit}`),
-  getTrending: (days = 30, limit = 20) =>
-    request(`/videos/trending?days=${days}&limit=${limit}`),
+  getStats: (datasetId) => {
+    const params = new URLSearchParams();
+    _appendDatasetId(params, datasetId);
+    const qs = params.toString();
+    return request(`/stats${qs ? '?' + qs : ''}`);
+  },
+
+  // ---- Videos ----
+  getTopVideos: (niche, days = 365, limit = 20, filters = {}, datasetId) => {
+    const params = new URLSearchParams({ days, limit });
+    if (niche) params.set('niche', niche);
+    if (filters.region) params.set('region', filters.region);
+    if (filters.category) params.set('category', filters.category);
+    if (filters.content_type) params.set('content_type', filters.content_type);
+    _appendDatasetId(params, datasetId);
+    return request(`/videos/top?${params.toString()}`);
+  },
+  getTrending: (days = 30, limit = 20, filters = {}, datasetId) => {
+    const params = new URLSearchParams({ days, limit });
+    if (filters.region) params.set('region', filters.region);
+    if (filters.category) params.set('category', filters.category);
+    if (filters.content_type) params.set('content_type', filters.content_type);
+    _appendDatasetId(params, datasetId);
+    return request(`/videos/trending?${params.toString()}`);
+  },
   getVideo: (id) => request(`/videos/${encodeURIComponent(id)}`),
-  getTopCreators: (limit = 20, minVideos = 2) =>
-    request(`/creators/top?limit=${limit}&min_videos=${minVideos}`),
-  triggerPipeline: (apiKey) =>
-    request('/pipeline/run', {
+
+  // ---- Creators ----
+  getTopCreators: (limit = 20, minVideos = 2, datasetId) => {
+    const params = new URLSearchParams({ limit, min_videos: minVideos });
+    _appendDatasetId(params, datasetId);
+    return request(`/creators/top?${params.toString()}`);
+  },
+  getCreatorIntelligence: (days = 365, limit = 30, minVideos = 1, datasetId) => {
+    const params = new URLSearchParams({ days, limit, min_videos: minVideos });
+    _appendDatasetId(params, datasetId);
+    return request(`/creators/intelligence?${params.toString()}`);
+  },
+  getRisingCreators: (days = 90, limit = 10, datasetId) => {
+    const params = new URLSearchParams({ days, limit });
+    _appendDatasetId(params, datasetId);
+    return request(`/creators/rising?${params.toString()}`);
+  },
+  getCreatorsByTrend: (trend, days = 365, limit = 20, datasetId) => {
+    const params = new URLSearchParams({ trend, days, limit });
+    _appendDatasetId(params, datasetId);
+    return request(`/creators/by-trend?${params.toString()}`);
+  },
+  getCreatorVideos: (channel, limit = 20) =>
+    request(`/creators/${encodeURIComponent(channel)}/videos?limit=${limit}`),
+
+  // ---- Datasets ----
+  getDatasets: (limit = 20) => request(`/datasets?limit=${limit}`),
+  getActiveDataset: () => request('/datasets/active'),
+  activateDataset: (runId) => request(`/datasets/${runId}/activate`, { method: 'POST' }),
+
+  // ---- Pipeline ----
+  triggerPipeline: (apiKey, configId) =>
+    request(`/pipeline/run${configId ? `?config_id=${configId}` : ''}`, {
       method: 'POST',
       headers: apiKey ? { 'X-API-Key': apiKey } : {},
     }),
   getPipelineHistory: (limit = 10) =>
     request(`/pipeline/history?limit=${limit}`),
+
+  // Pipeline Config CRUD
+  savePipelineConfig: (config) =>
+    request('/pipeline/config', {
+      method: 'POST',
+      body: JSON.stringify(config),
+    }),
+  listPipelineConfigs: (presetsOnly = false) =>
+    request(`/pipeline/configs?presets_only=${presetsOnly}`),
+  getPipelineConfig: (id) =>
+    request(`/pipeline/config/${id}`),
+  getLastUsedConfig: () =>
+    request('/pipeline/config/last'),
+  deletePipelineConfig: (id) =>
+    request(`/pipeline/config/${id}`, { method: 'DELETE' }),
+
+  // ---- Transcripts ----
   getTranscriptStats: () => request('/stats/transcripts'),
+  fetchTranscript: (videoId) =>
+    request(`/videos/${encodeURIComponent(videoId)}/transcript`, { method: 'POST' }),
+
+  // ---- Trends & Opportunities ----
+  discoverTrends: (days = 30, limit = 20, datasetId) => {
+    const params = new URLSearchParams({ days, limit });
+    _appendDatasetId(params, datasetId);
+    return request(`/trends/discover?${params.toString()}`);
+  },
+  getOpportunities: (days = 30, limit = 15, datasetId) => {
+    const params = new URLSearchParams({ days, limit });
+    _appendDatasetId(params, datasetId);
+    return request(`/opportunities?${params.toString()}`);
+  },
+
+  // ---- AI Content ----
+  generateContent: (videoId, platform = 'youtube', tone = 'professional') =>
+    request('/ai/generate-content', {
+      method: 'POST',
+      body: JSON.stringify({ video_id: videoId, platform, tone }),
+    }),
 };

@@ -113,14 +113,14 @@ class Settings(BaseSettings):
         description="Max Reddit posts to fetch per niche keyword",
     )
 
-    # ---- Niche Keywords ----------------------------------------------------
+    # ---- Reddit Search Keywords (NOT used for YouTube) ----------------------
     niche_keywords: List[str] = Field(
         default=[
             "AI for business",
             "AI productivity",
             "prompt engineering",
         ],
-        description="Search queries representing target niches",
+        description="Search queries for Reddit ingestion only. YouTube uses trending API (mostPopular) with NO query bias.",
     )
 
     # ---- Scoring & Filtering -----------------------------------------------
