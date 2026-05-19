@@ -37,18 +37,9 @@ async function request(endpoint, options = {}) {
 
   const res = await fetch(url, {
     headers,
-    credentials: 'include', // Still send cookies as fallback (same-origin dev)
+    credentials: 'include',
     ...options,
   });
-
-  // Handle 401 — redirect to login
-  if (res.status === 401) {
-    clearToken();
-    if (!window.location.pathname.startsWith('/login')) {
-      window.location.href = '/login';
-    }
-    throw new Error('Authentication required');
-  }
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
@@ -91,9 +82,8 @@ export const authApi = {
 
   logout: () => {
     clearToken();
-    const token = getToken();
+    localStorage.removeItem('genx_auth_user');
     const headers = {};
-    if (token) headers['Authorization'] = `Bearer ${token}`;
 
     return fetch(`${BASE_URL}/auth/logout`, {
       method: 'POST',

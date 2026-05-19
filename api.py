@@ -156,8 +156,13 @@ async def auth_middleware(request: Request, call_next):
     ):
         return await call_next(request)
 
-    # Check auth cookie
-    token = request.cookies.get(_COOKIE_NAME)
+    # Check auth: Bearer token first, cookie fallback
+    token = None
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+    if not token:
+        token = request.cookies.get(_COOKIE_NAME)
     if not token:
         return _cors_401(request, "Authentication required.")
 

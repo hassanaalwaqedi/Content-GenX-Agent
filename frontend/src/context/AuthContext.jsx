@@ -3,34 +3,42 @@ import { authApi } from '../api/client';
 
 const AuthContext = createContext(null);
 
-export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
+const USER_KEY = 'genx_auth_user';
 
-  // Restore session on mount
-  useEffect(() => {
-    authApi
-      .me()
-      .then((data) => {
-        if (data.authenticated) {
-          setUser({ username: data.username, expires_at: data.expires_at });
-        }
-      })
-      .catch(() => {
-        // Session invalid or network error — stay logged out
-      })
-      .finally(() => setLoading(false));
-  }, []);
+function loadUserFromStorage() {
+  try {
+    const raw = localStorage.getItem(USER_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveUserToStorage(user) {
+  if (user) {
+    localStorage.setItem(USER_KEY, JSON.stringify(user));
+  } else {
+    localStorage.removeItem(USER_KEY);
+  }
+}
+
+export function AuthProvider({ children }) {
+  // Restore user from localStorage immediately (no API call needed)
+  const [user, setUser] = useState(() => loadUserFromStorage());
+  const [loading, setLoading] = useState(false); // No loading delay — we restore from localStorage
 
   const login = useCallback(async (username, password) => {
     const data = await authApi.login(username, password);
-    setUser({ username: data.username, expires_at: data.expires_at });
+    const u = { username: data.username, expires_at: data.expires_at };
+    setUser(u);
+    saveUserToStorage(u);
     return data;
   }, []);
 
   const logout = useCallback(async () => {
-    await authApi.logout();
+    try { await authApi.logout(); } catch { /* ignore */ }
     setUser(null);
+    saveUserToStorage(null);
   }, []);
 
   return (
