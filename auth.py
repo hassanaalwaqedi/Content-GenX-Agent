@@ -115,14 +115,20 @@ def _clear_failed_attempts(client_ip: str) -> None:
 _COOKIE_NAME = "genx_session"
 
 
+def _is_production() -> bool:
+    """Detect if running in production (HTTPS / cross-origin)."""
+    return bool(os.environ.get("PRODUCTION") or os.environ.get("AWS_EXECUTION_ENV"))
+
+
 def _set_auth_cookie(response: Response, token: str) -> None:
     """Set the session cookie with security flags."""
+    prod = _is_production()
     response.set_cookie(
         key=_COOKIE_NAME,
         value=token,
         httponly=True,
-        samesite="lax",
-        secure=False,  # Set to True in production behind HTTPS
+        samesite="none" if prod else "lax",
+        secure=prod,
         max_age=_SESSION_LIFETIME_HOURS * 3600,
         path="/",
     )
@@ -130,10 +136,12 @@ def _set_auth_cookie(response: Response, token: str) -> None:
 
 def _clear_auth_cookie(response: Response) -> None:
     """Clear the session cookie."""
+    prod = _is_production()
     response.delete_cookie(
         key=_COOKIE_NAME,
         httponly=True,
-        samesite="lax",
+        samesite="none" if prod else "lax",
+        secure=prod,
         path="/",
     )
 
