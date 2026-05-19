@@ -2,23 +2,48 @@
  * API client for Content Intelligence Platform.
  * Wraps all backend endpoints with error handling.
  * All data endpoints support dataset_id for workspace scoping.
+ *
+ * Auth: JWT Bearer token stored in localStorage (cross-origin safe).
  */
 
 // In development, use empty string so requests go through Vite proxy (same-origin).
 // In production, set VITE_API_URL to the actual backend URL.
 const BASE_URL = import.meta.env.VITE_API_URL || '';
 
+const TOKEN_KEY = 'genx_auth_token';
+
+function getToken() {
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+function setToken(token) {
+  if (token) localStorage.setItem(TOKEN_KEY, token);
+}
+
+function clearToken() {
+  localStorage.removeItem(TOKEN_KEY);
+}
+
 async function request(endpoint, options = {}) {
   const url = `${BASE_URL}${endpoint}`;
+  const token = getToken();
+  const headers = {
+    'Content-Type': 'application/json',
+    ...options.headers,
+  };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
   const res = await fetch(url, {
-    headers: { 'Content-Type': 'application/json', ...options.headers },
-    credentials: 'include', // Send cookies for auth
+    headers,
+    credentials: 'include', // Still send cookies as fallback (same-origin dev)
     ...options,
   });
 
   // Handle 401 — redirect to login
   if (res.status === 401) {
-    // Only redirect if we're not already on the login page
+    clearToken();
     if (!window.location.pathname.startsWith('/login')) {
       window.location.href = '/login';
     }
@@ -34,9 +59,6 @@ async function request(endpoint, options = {}) {
 
 /**
  * Helper: append dataset_id to URLSearchParams.
- * - undefined means "use server default" (active dataset)
- * - null means "all data" (send 0 as sentinel)
- * - number means "specific dataset"
  */
 function _appendDatasetId(params, datasetId) {
   if (datasetId === null) {
@@ -48,28 +70,48 @@ function _appendDatasetId(params, datasetId) {
 
 // ---- Auth API ----
 export const authApi = {
-  login: (username, password) =>
-    fetch(`${BASE_URL}/auth/login`, {
+  login: (username, password) => {
+    const token = getToken();
+    const headers = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    return fetch(`${BASE_URL}/auth/login`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       credentials: 'include',
       body: JSON.stringify({ username, password }),
     }).then(async (res) => {
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Login failed');
+      // Store the JWT token from the response body
+      if (data.token) setToken(data.token);
       return data;
-    }),
+    });
+  },
 
-  logout: () =>
-    fetch(`${BASE_URL}/auth/logout`, {
+  logout: () => {
+    clearToken();
+    const token = getToken();
+    const headers = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    return fetch(`${BASE_URL}/auth/logout`, {
       method: 'POST',
+      headers,
       credentials: 'include',
-    }).then((res) => res.json()),
+    }).then((res) => res.json());
+  },
 
-  me: () =>
-    fetch(`${BASE_URL}/auth/me`, {
+  me: () => {
+    const token = getToken();
+    const headers = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    return fetch(`${BASE_URL}/auth/me`, {
+      headers,
       credentials: 'include',
-    }).then((res) => res.json()),
+    }).then((res) => res.json());
+  },
 };
 
 export const api = {

@@ -158,29 +158,37 @@ class AuthStatus(BaseModel):
     authenticated: bool
     username: Optional[str] = None
     expires_at: Optional[str] = None
+    token: Optional[str] = None  # JWT returned in body for cross-origin clients
 
 
 # ---------------------------------------------------------------------------
 # FastAPI dependency: require_auth
 # ---------------------------------------------------------------------------
 async def require_auth(
+    request: Request,
     genx_session: Optional[str] = Cookie(None),
 ) -> Dict[str, Any]:
     """
-    FastAPI dependency that validates the session cookie.
-
-    Usage:
-        @app.get("/protected", dependencies=[Depends(require_auth)])
-
-    Or to get the user payload:
-        @app.get("/me")
-        async def me(user=Depends(require_auth)): ...
+    FastAPI dependency that validates auth via:
+      1. Authorization: Bearer <token> header (cross-origin / production)
+      2. genx_session cookie (same-origin / development)
     """
-    if not genx_session:
+    settings = _get_auth_settings()
+    token = None
+
+    # 1. Check Authorization header first
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+
+    # 2. Fallback to cookie
+    if not token and genx_session:
+        token = genx_session
+
+    if not token:
         raise HTTPException(status_code=401, detail="Authentication required.")
 
-    settings = _get_auth_settings()
-    payload = _decode_token(genx_session, settings["secret"])
+    payload = _decode_token(token, settings["secret"])
 
     if payload is None:
         raise HTTPException(status_code=401, detail="Session expired or invalid.")
@@ -253,6 +261,7 @@ async def login(body: LoginRequest, request: Request, response: Response):
         authenticated=True,
         username=body.username,
         expires_at=exp_time.isoformat(),
+        token=token,
     )
 
 
@@ -264,16 +273,30 @@ async def logout(response: Response):
 
 
 @auth_router.get("/me", response_model=AuthStatus)
-async def me(genx_session: Optional[str] = Cookie(None)):
+async def me(
+    request: Request,
+    genx_session: Optional[str] = Cookie(None),
+):
     """
     Check current authentication status.
-    Used by the frontend to restore sessions on page load.
+    Accepts Bearer token or session cookie.
     """
-    if not genx_session:
+    settings = _get_auth_settings()
+    token = None
+
+    # Check Authorization header first
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+
+    # Fallback to cookie
+    if not token and genx_session:
+        token = genx_session
+
+    if not token:
         return AuthStatus(authenticated=False)
 
-    settings = _get_auth_settings()
-    payload = _decode_token(genx_session, settings["secret"])
+    payload = _decode_token(token, settings["secret"])
 
     if payload is None:
         return AuthStatus(authenticated=False)
