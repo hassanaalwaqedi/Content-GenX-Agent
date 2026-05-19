@@ -7,12 +7,8 @@ import TranscriptModal from '../components/TranscriptModal';
 import ContentGeneratorModal from '../components/ContentGeneratorModal';
 import SkeletonCard from '../components/SkeletonCard';
 import { useDataset } from '../context/DatasetContext';
-
-function fmt(n) {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
-  return String(n);
-}
+import { getPlatformIcon, getPlatformLabel, fmt, ALL_PLATFORMS } from '../utils/platform';
+// fmt is now imported from utils/platform
 
 function debounce(fn, ms) {
   let timer;
@@ -39,6 +35,7 @@ export default function TopVideos() {
 
   // Local filters (region/category within dataset)
   const [globalFilters, setGlobalFilters] = useState({ region: '', category: '', content_type: '' });
+  const [platformFilter, setPlatformFilter] = useState('');
 
   // Transcript modal
   const [transcriptVideo, setTranscriptVideo] = useState(null);
@@ -89,6 +86,11 @@ export default function TopVideos() {
   const filteredVideos = useMemo(() => {
     let result = videos;
 
+    // Filter by platform
+    if (platformFilter) {
+      result = result.filter(v => v.platform === platformFilter);
+    }
+
     // Filter by trend topic (from Dashboard click-through)
     if (trendFilter) {
       const tf = trendFilter.toLowerCase();
@@ -112,7 +114,7 @@ export default function TopVideos() {
       result = result.filter(v => (v.score || 0) >= minScore);
     }
     return result;
-  }, [videos, debouncedSearch, minScore, trendFilter]);
+  }, [videos, debouncedSearch, minScore, trendFilter, platformFilter]);
 
   // Sidebar data
   const sidebarData = useMemo(() => {
@@ -219,7 +221,7 @@ export default function TopVideos() {
             <span className="ci-search-icon">🔍</span>
             <input
               type="text"
-              placeholder="Search videos, channels..."
+              placeholder="Search content, creators..."
               value={searchTerm}
               onChange={handleSearchChange}
               className="ci-search-input"
@@ -252,6 +254,17 @@ export default function TopVideos() {
             <option value={365}>365 days</option>
           </select>
 
+          <select
+            className="ci-select"
+            value={platformFilter}
+            onChange={(e) => setPlatformFilter(e.target.value)}
+          >
+            <option value="">All Platforms</option>
+            {ALL_PLATFORMS.map(p => (
+              <option key={p} value={p}>{getPlatformIcon(p)} {getPlatformLabel(p)}</option>
+            ))}
+          </select>
+
           <div className="ci-score-filter">
             <label className="ci-score-label">
               Min Score: <strong>{minScore.toFixed(1)}</strong>
@@ -269,7 +282,7 @@ export default function TopVideos() {
         </div>
 
         <div className="ci-filter-meta">
-          <span className="badge badge-blue">{filteredVideos.length} videos</span>
+          <span className="badge badge-blue">{filteredVideos.length} content items</span>
           {debouncedSearch && <span className="badge badge-purple">Filtered</span>}
           {minScore > 0 && <span className="badge badge-orange">Score ≥ {minScore.toFixed(1)}</span>}
           {videos.length > 0 && (
@@ -277,13 +290,14 @@ export default function TopVideos() {
               className="btn btn-secondary ci-export-btn"
               onClick={() => {
                 exportToPDF(
-                  `top_videos_${selectedNiche.replace(/\s+/g, '_')}.pdf`,
-                  'Top Videos Report',
+                  `top_content_${selectedNiche.replace(/\s+/g, '_')}.pdf`,
+                  'Top Content Report',
                   `${selectedNiche} — Last ${days} days`,
-                  ['#', 'Title', 'Channel', 'Views', 'Engagement', 'Score'],
+                  ['#', 'Platform', 'Title', 'Creator', 'Views', 'Engagement', 'Score'],
                   filteredVideos.map((v, i) => [
                     i + 1,
-                    v.title?.slice(0, 55) + (v.title?.length > 55 ? '…' : ''),
+                    getPlatformLabel(v.platform),
+                    v.title?.slice(0, 50) + (v.title?.length > 50 ? '…' : ''),
                     v.channel || '—',
                     fmt(v.views),
                     (v.engagement_rate * 100).toFixed(1) + '%',

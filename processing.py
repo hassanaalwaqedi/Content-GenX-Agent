@@ -26,8 +26,14 @@ from config import get_settings
 
 logger = logging.getLogger(__name__)
 
-# Default regions that indicate a global run (not region-specific)
-_GLOBAL_REGION_SET = {"US", "GB", "CA", "DE", "FR", "AU", "AE"}
+# Default regions that indicate a broad (not region-specific) run
+_GLOBAL_REGION_SET = {
+    "US", "CA", "BR", "MX",
+    "GB", "DE", "FR", "NL", "ES", "IT", "SE", "CH", "PL", "NO",
+    "AE", "SA", "KW", "QA", "BH", "EG", "TR",
+    "AU", "JP", "KR", "SG",
+}
+_REGION_SPECIFIC_THRESHOLD = 8  # Relax filters if fewer than this many regions
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +122,7 @@ def process_videos(
     min_views = thresholds.min_views
     min_engagement = thresholds.min_engagement_rate
 
-    if config and len(config.regions) < len(_GLOBAL_REGION_SET):
+    if config and len(config.regions) < _REGION_SPECIFIC_THRESHOLD:
         # Region-specific run — relax filters
         min_views = min(min_views, 500)
         min_engagement = min(min_engagement, 0.01)
@@ -132,18 +138,28 @@ def process_videos(
     # ---- Step 1: Clean & enrich -------------------------------------------
     enriched: List[Dict[str, Any]] = []
     for rv in raw_videos:
-        if not rv.video_id or not rv.title:
+        # Handle both RawVideo dataclass instances and plain dicts
+        # (connectors return dicts via NormalizedContent.to_raw_video())
+        if isinstance(rv, dict):
+            d = rv
+        else:
+            d = rv.to_dict() if hasattr(rv, 'to_dict') else vars(rv)
+
+        if not d.get("video_id") or not d.get("title"):
             continue
 
-        engagement = _safe_engagement_rate(rv.views, rv.likes, rv.comments)
-        recency = _recency_factor(rv.published_at)
+        views = int(d.get("views", 0) or 0)
+        likes = int(d.get("likes", 0) or 0)
+        comments_count = int(d.get("comments", 0) or 0)
+        engagement = _safe_engagement_rate(views, likes, comments_count)
+        recency = _recency_factor(d.get("published_at", ""))
 
         enriched.append(
             {
-                **rv.to_dict(),
+                **d,
                 "engagement_rate": round(engagement, 6),
                 "recency_factor": recency,
-                "log_views": math.log1p(rv.views),
+                "log_views": math.log1p(views),
             }
         )
 

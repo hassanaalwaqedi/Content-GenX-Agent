@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom';
+import { getPlatformIcon, getPlatformLabel, fmt } from '../utils/platform';
 
 const DEFAULT_THUMBNAIL = 'https://via.placeholder.com/320x180.png?text=No+Thumbnail';
 
@@ -8,11 +9,7 @@ const REGION_FLAGS = {
   SA: '🇸🇦', EG: '🇪🇬', TR: '🇹🇷', IT: '🇮🇹', ES: '🇪🇸', NL: '🇳🇱',
 };
 
-function fmt(n) {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
-  return String(n);
-}
+// fmt is now imported from utils/platform
 
 function getTrendBadge(video) {
   const eng = video.engagement_rate * 100;
@@ -25,7 +22,8 @@ function getTrendBadge(video) {
 function extractTags(video) {
   const tags = [];
   if (video.niche) tags.push(video.niche);
-  if (video.platform) tags.push(video.platform === 'reddit' ? 'Reddit' : 'YouTube');
+  if (video.platform) tags.push(getPlatformLabel(video.platform));
+  if (video.content_type && video.content_type !== 'video') tags.push(video.content_type);
   // Extract keywords from title
   const keywords = (video.title || '')
     .replace(/[^\w\s]/g, '')
@@ -36,7 +34,7 @@ function extractTags(video) {
   keywords.forEach(k => {
     if (!tags.some(t => t.toLowerCase() === k)) tags.push(k);
   });
-  return tags.slice(0, 4);
+  return tags.slice(0, 5);
 }
 
 export default function VideoCard({ video, onTranscript, onGenerate }) {
@@ -75,7 +73,7 @@ export default function VideoCard({ video, onTranscript, onGenerate }) {
         </Link>
 
         <p className="vcard-channel">
-          {video.platform === 'reddit' ? '💬' : '🎬'} {video.channel || 'Unknown'}
+          {getPlatformIcon(video.platform)} {video.channel || 'Unknown'}
           {video.source_region && (
             <span className="vcard-region-badge" title={`Source: ${video.source_region}`}>
               {REGION_FLAGS[video.source_region] || '🌐'} {video.source_region}
@@ -92,10 +90,30 @@ export default function VideoCard({ video, onTranscript, onGenerate }) {
             <span className="vcard-stat-icon">👍</span>
             {fmt(video.likes)}
           </span>
+          {video.shares > 0 && (
+            <span className="vcard-stat">
+              <span className="vcard-stat-icon">🔄</span>
+              {fmt(video.shares)}
+            </span>
+          )}
+          {video.saves > 0 && (
+            <span className="vcard-stat">
+              <span className="vcard-stat-icon">🔖</span>
+              {fmt(video.saves)}
+            </span>
+          )}
           <span className={`vcard-engagement ${video.engagement_rate > 0.05 ? 'high' : video.engagement_rate > 0.02 ? 'mid' : 'low'}`}>
             {(video.engagement_rate * 100).toFixed(1)}%
           </span>
         </div>
+
+        {/* Audio name for TikTok/Instagram */}
+        {video.audio_name && (
+          <div className="vcard-audio">
+            <span className="vcard-stat-icon">🎶</span>
+            <span>{video.audio_name}</span>
+          </div>
+        )}
 
         {/* Tags */}
         <div className="vcard-tags">
@@ -109,7 +127,7 @@ export default function VideoCard({ video, onTranscript, onGenerate }) {
           <Link to={`/video/${video.video_id}`} className="vcard-btn vcard-btn-detail">
             View Details
           </Link>
-          {video.platform !== 'reddit' && (
+          {video.platform === 'youtube' && (
             <button
               className="vcard-btn vcard-btn-transcript"
               onClick={() => onTranscript(video)}

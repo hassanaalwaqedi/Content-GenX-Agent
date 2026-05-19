@@ -200,7 +200,7 @@ export function exportTranscriptPDF(video) {
   doc.setFontSize(9);
   doc.setTextColor(...muted);
   const channelText = video.channel ? `by ${video.channel}` : '';
-  const platformIcon = video.platform === 'reddit' ? 'Reddit' : 'YouTube';
+  const platformIcon = { youtube: 'YouTube', reddit: 'Reddit', tiktok: 'TikTok', instagram: 'Instagram' }[video.platform] || video.platform || 'Unknown';
   doc.text(`${platformIcon}  •  ${video.niche}  •  ${channelText}`, mx, y);
   y += 10;
 

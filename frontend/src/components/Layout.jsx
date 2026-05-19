@@ -1,13 +1,14 @@
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { useState, useEffect } from 'react';
 import DatasetSwitcher from './DatasetSwitcher';
+import { useAuth } from '../context/AuthContext';
 
 const navItems = [
   { to: '/', icon: '📊', label: 'Dashboard' },
-  { to: '/videos', icon: '🎬', label: 'Top Videos' },
+  { to: '/videos', icon: '🎬', label: 'Top Content' },
   { to: '/trending', icon: '🔥', label: 'Trending' },
   { to: '/creators', icon: '👤', label: 'Creators' },
-  { to: '/pipeline', icon: '⚙️', label: 'Pipeline' },
+  { to: '/pipeline', icon: '🚀', label: 'Intelligence' },
 ];
 
 function getInitialTheme() {
@@ -20,6 +21,7 @@ export default function Layout() {
   const [theme, setTheme] = useState(getInitialTheme);
   const [menuOpen, setMenuOpen] = useState(false);
   const location = useLocation();
+  const { user, logout } = useAuth();
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -85,9 +87,19 @@ export default function Layout() {
             </span>
             {theme === 'dark' ? 'Light Mode' : 'Dark Mode'}
           </button>
+          {user && (
+            <button
+              className="theme-toggle"
+              onClick={logout}
+              style={{ color: 'var(--color-accent-red)', borderColor: 'rgba(239,68,68,0.2)' }}
+            >
+              <span className="theme-toggle-icon">🚪</span>
+              Logout
+            </button>
+          )}
           <div className="status-bar">
             <span className="health-dot online"></span>
-            System Online
+            {user ? user.username : 'System Online'}
           </div>
         </div>
       </aside>

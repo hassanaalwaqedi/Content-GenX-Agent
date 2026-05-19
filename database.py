@@ -104,8 +104,11 @@ INSERT INTO videos (
     engagement_rate, score, published_at, channel, thumbnail_url,
     description, target_audience, strategic_advice, content_gap,
     transcript, topics, source_region, content_type, pipeline_run_id,
+    hashtags, audio_name, hook_text, hook_category,
+    trend_velocity, virality_score, shares, saves,
+    author_followers, source_url, raw_payload,
     created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(video_id) DO UPDATE SET
     views             = excluded.views,
     likes             = excluded.likes,
@@ -123,6 +126,17 @@ ON CONFLICT(video_id) DO UPDATE SET
     source_region     = CASE WHEN excluded.source_region != '' THEN excluded.source_region ELSE videos.source_region END,
     content_type      = CASE WHEN excluded.content_type != 'all' THEN excluded.content_type ELSE videos.content_type END,
     pipeline_run_id   = excluded.pipeline_run_id,
+    hashtags          = CASE WHEN excluded.hashtags != '' THEN excluded.hashtags ELSE videos.hashtags END,
+    audio_name        = CASE WHEN excluded.audio_name != '' THEN excluded.audio_name ELSE videos.audio_name END,
+    hook_text         = CASE WHEN excluded.hook_text != '' THEN excluded.hook_text ELSE videos.hook_text END,
+    hook_category     = CASE WHEN excluded.hook_category != '' THEN excluded.hook_category ELSE videos.hook_category END,
+    trend_velocity    = CASE WHEN excluded.trend_velocity > 0 THEN excluded.trend_velocity ELSE videos.trend_velocity END,
+    virality_score    = CASE WHEN excluded.virality_score > 0 THEN excluded.virality_score ELSE videos.virality_score END,
+    shares            = excluded.shares,
+    saves             = excluded.saves,
+    author_followers  = CASE WHEN excluded.author_followers > 0 THEN excluded.author_followers ELSE videos.author_followers END,
+    source_url        = CASE WHEN excluded.source_url != '' THEN excluded.source_url ELSE videos.source_url END,
+    raw_payload       = CASE WHEN excluded.raw_payload != '' THEN excluded.raw_payload ELSE videos.raw_payload END,
     updated_at        = excluded.updated_at;
 """
 
@@ -179,6 +193,18 @@ _COLUMN_MIGRATIONS = [
     ("source_region", "TEXT DEFAULT ''"),
     ("content_type", "TEXT DEFAULT 'all'"),
     ("pipeline_run_id", "INTEGER"),
+    # ---- Connector Architecture additions ----
+    ("hashtags", "TEXT DEFAULT ''"),
+    ("audio_name", "TEXT DEFAULT ''"),
+    ("hook_text", "TEXT DEFAULT ''"),
+    ("hook_category", "TEXT DEFAULT ''"),
+    ("trend_velocity", "REAL DEFAULT 0.0"),
+    ("virality_score", "REAL DEFAULT 0.0"),
+    ("shares", "INTEGER DEFAULT 0"),
+    ("saves", "INTEGER DEFAULT 0"),
+    ("author_followers", "INTEGER DEFAULT 0"),
+    ("source_url", "TEXT DEFAULT ''"),
+    ("raw_payload", "TEXT DEFAULT ''"),
 ]
 
 # Migrations for pipeline_runs table
@@ -321,6 +347,18 @@ def insert_videos(videos: List[dict]) -> int:
                         v.get("source_region", ""),
                         v.get("content_type", "all"),
                         v.get("pipeline_run_id"),
+                        # Connector architecture fields
+                        v.get("hashtags", ""),
+                        v.get("audio_name", ""),
+                        v.get("hook_text", ""),
+                        v.get("hook_category", ""),
+                        v.get("trend_velocity", 0.0),
+                        v.get("virality_score", 0.0),
+                        v.get("shares", 0),
+                        v.get("saves", 0),
+                        v.get("author_followers", 0),
+                        v.get("source_url", ""),
+                        v.get("raw_payload", ""),
                         now,  # created_at
                         now,  # updated_at
                     ),

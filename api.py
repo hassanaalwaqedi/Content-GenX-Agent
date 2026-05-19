@@ -19,10 +19,13 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Query, Security
+from fastapi import FastAPI, HTTPException, Query, Request, Security
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
+
+from auth import auth_router, require_auth, _COOKIE_NAME, _decode_token, _get_auth_settings
 
 from config import get_settings
 from database import (
@@ -112,6 +115,61 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ---- Auth router & middleware -----------------------------------------------
+app.include_router(auth_router)
+
+# Public paths that do NOT require authentication
+_PUBLIC_PATHS = {"/health", "/docs", "/redoc", "/openapi.json"}
+_PUBLIC_PREFIXES = ("/auth/",)
+
+
+def _cors_401(request: Request, detail: str) -> JSONResponse:
+    """Return a 401 response with CORS headers so the browser can read it."""
+    origin = request.headers.get("origin", "")
+    headers = {}
+    if origin:
+        allowed = _settings.cors_allowed_origins
+        if "*" in allowed or origin in allowed:
+            headers["Access-Control-Allow-Origin"] = origin
+            headers["Access-Control-Allow-Credentials"] = "true"
+    return JSONResponse(
+        status_code=401,
+        content={"detail": detail},
+        headers=headers,
+    )
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """
+    Global authentication middleware.
+    Checks for a valid session cookie on every request except public paths.
+    """
+    path = request.url.path
+
+    # Allow public endpoints and OPTIONS preflight
+    if (
+        request.method == "OPTIONS"
+        or path in _PUBLIC_PATHS
+        or any(path.startswith(p) for p in _PUBLIC_PREFIXES)
+    ):
+        return await call_next(request)
+
+    # Check auth cookie
+    token = request.cookies.get(_COOKIE_NAME)
+    if not token:
+        return _cors_401(request, "Authentication required.")
+
+    settings = _get_auth_settings()
+    payload = _decode_token(token, settings["secret"])
+    if payload is None:
+        return _cors_401(request, "Session expired or invalid.")
+
+    # Attach user info to request state for downstream use
+    request.state.user = payload
+    return await call_next(request)
+
 
 # Pipeline authentication (optional shared-secret API key)
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -743,11 +801,35 @@ async def pipeline_history(
     return PipelineHistoryResponse(count=len(runs), runs=runs)
 
 
+@app.get(
+    "/connectors/health",
+    summary="Health status of all platform connectors",
+    tags=["System"],
+)
+async def connectors_health():
+    """Return health status of all registered platform connectors."""
+    try:
+        from connectors.registry import ConnectorRegistry
+        registry = ConnectorRegistry()
+        health = registry.health_check_all()
+        return {
+            "connectors": {k: v.to_dict() for k, v in health.items()},
+            "available": registry.get_available(),
+        }
+    except Exception as exc:
+        logger.error("Error checking connector health: %s", exc)
+        return {
+            "connectors": {},
+            "available": [],
+            "error": str(exc),
+        }
+
+
 # ---------------------------------------------------------------------------
 # Pipeline Config CRUD (Parts 2, 7, 8)
 # ---------------------------------------------------------------------------
 VALID_REGIONS = {"US", "GB", "CA", "DE", "FR", "AU", "AE", "JP", "KR", "BR", "MX", "IN", "SA", "EG", "TR"}
-VALID_PLATFORMS = {"youtube", "reddit"}
+VALID_PLATFORMS = {"youtube", "reddit", "tiktok", "instagram"}
 VALID_CONTENT_TYPES = {"all", "shorts", "long"}
 
 

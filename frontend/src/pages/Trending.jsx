@@ -5,12 +5,8 @@ import { api } from '../api/client';
 import { exportToPDF } from '../api/export';
 import ContentGeneratorModal from '../components/ContentGeneratorModal';
 import { useDataset } from '../context/DatasetContext';
-
-function fmt(n) {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
-  return String(n);
-}
+import { getPlatformIcon, getPlatformLabel, fmt, ALL_PLATFORMS } from '../utils/platform';
+// fmt is now imported from utils/platform
 
 const DEFAULT_THUMBNAIL = 'https://via.placeholder.com/320x180.png?text=No+Thumbnail';
 
@@ -30,6 +26,7 @@ export default function Trending() {
 
   // Local filters
   const [globalFilters, setGlobalFilters] = useState({ region: '', category: '', content_type: '' });
+  const [platformFilter, setPlatformFilter] = useState('');
 
   useEffect(() => {
     setLoading(true);
@@ -41,7 +38,11 @@ export default function Trending() {
   }, [days, globalFilters, datasetId]);
 
   // Build engagement chart data from top 10
-  const chartData = videos.slice(0, 10).map((v, i) => ({
+  const filteredVideos = platformFilter
+    ? videos.filter(v => v.platform === platformFilter)
+    : videos;
+
+  const chartData = filteredVideos.slice(0, 10).map((v, i) => ({
     name: v.title?.slice(0, 20) + '...',
     engagement: +(v.engagement_rate * 100).toFixed(2),
     views: v.views,
@@ -69,7 +70,7 @@ export default function Trending() {
   return (
     <>
       <div className="page-header">
-        <h2>Trending Videos</h2>
+        <h2>Trending Content</h2>
         <p>Fastest-growing content gaining traction right now</p>
       </div>
 
@@ -87,19 +88,30 @@ export default function Trending() {
           <option value={180}>Last 180 days</option>
           <option value={365}>Last 365 days</option>
         </select>
-        <span className="badge badge-green">{videos.length} trending</span>
-        {videos.length > 0 && (
+        <select
+          className="select-input"
+          value={platformFilter}
+          onChange={(e) => setPlatformFilter(e.target.value)}
+        >
+          <option value="">All Platforms</option>
+          {ALL_PLATFORMS.map(p => (
+            <option key={p} value={p}>{getPlatformIcon(p)} {getPlatformLabel(p)}</option>
+          ))}
+        </select>
+        <span className="badge badge-green">{filteredVideos.length} trending</span>
+        {filteredVideos.length > 0 && (
           <button
             className="btn btn-secondary"
             onClick={() => {
               exportToPDF(
-                `trending_videos_${days}d.pdf`,
-                'Trending Videos Report',
+                `trending_content_${days}d.pdf`,
+                'Trending Content Report',
                 `Fastest-growing content — Last ${days} days`,
-                ['#', 'Title', 'Channel', 'Views', 'Engagement', 'Score', 'Published'],
-                videos.map((v, i) => [
+                ['#', 'Platform', 'Title', 'Creator', 'Views', 'Engagement', 'Score', 'Published'],
+                filteredVideos.map((v, i) => [
                   i + 1,
-                  v.title?.slice(0, 55) + (v.title?.length > 55 ? '…' : ''),
+                  getPlatformLabel(v.platform),
+                  v.title?.slice(0, 50) + (v.title?.length > 50 ? '…' : ''),
                   v.channel || '—',
                   fmt(v.views),
                   (v.engagement_rate * 100).toFixed(1) + '%',
@@ -144,8 +156,9 @@ export default function Trending() {
             <thead>
               <tr>
                 <th>#</th>
+                <th>Platform</th>
                 <th>Title</th>
-                <th>Channel</th>
+                <th>Creator</th>
                 <th>Views</th>
                 <th>Engagement</th>
                 <th>Score</th>
@@ -155,9 +168,14 @@ export default function Trending() {
               </tr>
             </thead>
             <tbody>
-              {videos.map((v, i) => (
+              {filteredVideos.map((v, i) => (
                 <tr key={v.video_id}>
                   <td className="number-cell">{i + 1}</td>
+                  <td>
+                    <span title={getPlatformLabel(v.platform)} style={{ fontSize: '1.1rem' }}>
+                      {getPlatformIcon(v.platform)}
+                    </span>
+                  </td>
                   <td>
                     <Link to={`/video/${v.video_id}`} className="title-cell video-title-cell" style={{ color: 'var(--color-text)' }}>
                       <img
@@ -167,9 +185,6 @@ export default function Trending() {
                         onError={(e) => { e.target.src = DEFAULT_THUMBNAIL; }}
                       />
                       <span className="video-title-text">
-                        <span title={v.platform === 'reddit' ? 'Reddit' : 'YouTube'} style={{ marginRight: 6 }}>
-                          {v.platform === 'reddit' ? '💬' : '🎬'}
-                        </span>
                         {v.title}
                       </span>
                     </Link>
@@ -188,7 +203,7 @@ export default function Trending() {
                     {v.published_at ? new Date(v.published_at).toLocaleDateString('de-DE') : '—'}
                   </td>
                   <td>
-                    {v.platform !== 'reddit' && (
+                    {v.platform === 'youtube' && (
                       <button
                         className="btn-transcript"
                         onClick={(e) => { e.preventDefault(); fetchTranscript(v.video_id); }}

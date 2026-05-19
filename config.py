@@ -113,6 +113,56 @@ class Settings(BaseSettings):
         description="Max Reddit posts to fetch per niche keyword",
     )
 
+    # ---- TikTok Ingestion --------------------------------------------------
+    tiktok_enabled: bool = Field(
+        default=False,
+        description="Enable TikTok connector (uses RapidAPI tiktok-scraper7)",
+    )
+    tiktok_request_delay: float = Field(
+        default=2.0, ge=0.5,
+        description="Delay between TikTok API requests (seconds)",
+    )
+    tiktok_max_results: int = Field(
+        default=30, ge=1, le=100,
+        description="Max TikTok videos to fetch per query",
+    )
+    tiktok_request_timeout: int = Field(
+        default=30, ge=5,
+        description="TikTok request timeout in seconds",
+    )
+    tiktok_daily_scan_limit: int = Field(
+        default=3, ge=0,
+        description="Max TikTok scans per day (0 = unlimited). Prevents rate limiting.",
+    )
+
+    # ---- Instagram Ingestion -----------------------------------------------
+    instagram_enabled: bool = Field(
+        default=False,
+        description="Enable Instagram connector (requires RapidAPI key)",
+    )
+    rapidapi_key: str = Field(
+        default="",
+        description="RapidAPI key for Instagram (instagram120) API",
+    )
+    instagram_request_delay: float = Field(
+        default=3.0, ge=1.0,
+        description="Delay between Instagram requests (seconds)",
+    )
+    instagram_max_results: int = Field(
+        default=30, ge=1, le=100,
+        description="Max Instagram posts to fetch per creator",
+    )
+    instagram_daily_scan_limit: int = Field(
+        default=5, ge=0,
+        description="Max Instagram scans per day (0 = unlimited). Prevents rate limiting.",
+    )
+
+    # ---- Velocity Scoring Weights ------------------------------------------
+    velocity_weight_views: float = Field(default=0.30)
+    velocity_weight_engagement: float = Field(default=0.35)
+    velocity_weight_recency: float = Field(default=0.20)
+    velocity_weight_shares: float = Field(default=0.15)
+
     # ---- Reddit Search Keywords (NOT used for YouTube) ----------------------
     niche_keywords: List[str] = Field(
         default=[
@@ -151,6 +201,20 @@ class Settings(BaseSettings):
     pipeline_api_key: str = Field(
         default="",
         description="Shared secret for /pipeline/run. Leave empty to disable auth.",
+    )
+
+    # ---- Authentication (single-operator) -----------------------------------
+    genx_admin_username: str = Field(
+        default="",
+        description="Admin username for platform login",
+    )
+    genx_admin_password: str = Field(
+        default="",
+        description="Admin password for platform login",
+    )
+    genx_auth_secret: str = Field(
+        default="",
+        description="JWT signing secret (HMAC-SHA256). Auto-generated if empty.",
     )
 
     @field_validator("log_level")

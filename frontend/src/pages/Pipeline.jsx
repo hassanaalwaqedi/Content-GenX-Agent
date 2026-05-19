@@ -1,20 +1,45 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { api } from '../api/client';
+import IntelligenceStatusBar from '../components/intelligence/IntelligenceStatusBar';
+import ConnectorHealthCards from '../components/intelligence/ConnectorHealthCards';
+import ScanFlowVisualization from '../components/intelligence/ScanFlowVisualization';
+import RunHistorySection from '../components/intelligence/RunHistorySection';
+import RunningPipelineUX from '../components/intelligence/RunningPipelineUX';
+import IntelligenceConfidence from '../components/intelligence/IntelligenceConfidence';
+import './Pipeline.css';
+import '../components/intelligence/intelligence.css';
 
+/* ── Constants ── */
 const ALL_REGIONS = [
+  // Americas
   { code: 'US', label: '🇺🇸 United States' },
-  { code: 'GB', label: '🇬🇧 United Kingdom' },
   { code: 'CA', label: '🇨🇦 Canada' },
-  { code: 'DE', label: '🇩🇪 Germany' },
-  { code: 'FR', label: '🇫🇷 France' },
-  { code: 'AU', label: '🇦🇺 Australia' },
-  { code: 'AE', label: '🇦🇪 UAE' },
-  { code: 'JP', label: '🇯🇵 Japan' },
-  { code: 'KR', label: '🇰🇷 South Korea' },
   { code: 'BR', label: '🇧🇷 Brazil' },
   { code: 'MX', label: '🇲🇽 Mexico' },
+  // Europe
+  { code: 'GB', label: '🇬🇧 United Kingdom' },
+  { code: 'DE', label: '🇩🇪 Germany' },
+  { code: 'FR', label: '🇫🇷 France' },
+  { code: 'NL', label: '🇳🇱 Netherlands' },
+  { code: 'ES', label: '🇪🇸 Spain' },
+  { code: 'IT', label: '🇮🇹 Italy' },
+  { code: 'SE', label: '🇸🇪 Sweden' },
+  { code: 'CH', label: '🇨🇭 Switzerland' },
+  { code: 'PL', label: '🇵🇱 Poland' },
+  { code: 'NO', label: '🇳🇴 Norway' },
+  // Middle East
+  { code: 'AE', label: '🇦🇪 UAE' },
   { code: 'SA', label: '🇸🇦 Saudi Arabia' },
+  { code: 'KW', label: '🇰🇼 Kuwait' },
+  { code: 'QA', label: '🇶🇦 Qatar' },
+  { code: 'BH', label: '🇧🇭 Bahrain' },
+  { code: 'EG', label: '🇪🇬 Egypt' },
   { code: 'TR', label: '🇹🇷 Turkey' },
+  // Asia-Pacific
+  { code: 'AU', label: '🇦🇺 Australia' },
+  { code: 'JP', label: '🇯🇵 Japan' },
+  { code: 'KR', label: '🇰🇷 South Korea' },
+  { code: 'SG', label: '🇸🇬 Singapore' },
 ];
 
 const ALL_CATEGORIES = [
@@ -23,9 +48,11 @@ const ALL_CATEGORIES = [
   'people & blogs', 'film & animation', 'travel & events',
 ];
 
+const SUGGESTED_SIGNALS = ['AI', 'ChatGPT', 'Claude', 'Finance', 'Gaming', 'Startups', 'Marketing', 'SaaS', 'Crypto', 'Fitness'];
+
 const DEFAULT_CONFIG = {
   name: 'Custom',
-  regions: ['US', 'GB', 'CA', 'DE', 'FR', 'AU', 'AE'],
+  regions: ['US', 'GB', 'CA', 'DE', 'FR', 'AU', 'AE', 'SA'],
   platforms: ['youtube'],
   categories: [],
   keywords: [],
@@ -33,6 +60,44 @@ const DEFAULT_CONFIG = {
   is_preset: false,
 };
 
+const PLATFORM_NAMES = { youtube: 'YouTube', reddit: 'Reddit', tiktok: 'TikTok', instagram: 'Instagram' };
+
+/* ── Helpers ── */
+function estimateRuntime(config) {
+  const total = 15 + config.regions.length * 4 + config.platforms.length * 5 + config.keywords.length * 2;
+  if (total < 30) return '~20 sec';
+  if (total < 60) return '~40 sec';
+  if (total < 120) return '~1–2 min';
+  return '~2–3 min';
+}
+
+function estimateDepth(config) {
+  const factors = config.regions.length + config.keywords.length + config.categories.length;
+  if (factors <= 3) return 'Focused';
+  if (factors <= 8) return 'Standard';
+  return 'Deep Scan';
+}
+
+/* ── Step Card ── */
+function StepCard({ number, title, description, badge, badgeType, hasSelection, children }) {
+  return (
+    <div className={`scan-step${hasSelection ? ' has-selection' : ''}`}>
+      <div className="scan-step-header">
+        <div className="scan-step-number">{number}</div>
+        <div className="scan-step-info">
+          <div className="scan-step-title">{title}</div>
+          <div className="scan-step-desc">{description}</div>
+        </div>
+        {badge && <span className={`scan-step-badge${badgeType === 'optional' ? ' optional' : ''}`}>{badge}</span>}
+      </div>
+      <div className="scan-step-body">{children}</div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   MAIN PAGE
+   ══════════════════════════════════════════════════════════════════ */
 export default function Pipeline() {
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -43,10 +108,12 @@ export default function Pipeline() {
   const [keywordInput, setKeywordInput] = useState('');
   const [presetName, setPresetName] = useState('');
   const [showPresetSave, setShowPresetSave] = useState(false);
-
-  // Config form state
   const [config, setConfig] = useState({ ...DEFAULT_CONFIG });
+  const [connectorData, setConnectorData] = useState(null);
+  const [scanSection, setScanSection] = useState(true);
+  const triggerTimeRef = useRef(null);
 
+  /* ── Data Loading ── */
   const loadHistory = useCallback(() => {
     api.getPipelineHistory(20)
       .then((data) => setHistory(data.runs || []))
@@ -71,27 +138,35 @@ export default function Pipeline() {
       .catch(() => {});
   }, []);
 
+  const loadConnectors = useCallback(() => {
+    api.getConnectorHealth()
+      .then(setConnectorData)
+      .catch(() => {});
+  }, []);
+
   useEffect(() => {
     loadHistory();
     loadConfigs();
     loadLastUsed();
-  }, [loadHistory, loadConfigs, loadLastUsed]);
+    loadConnectors();
+  }, [loadHistory, loadConfigs, loadLastUsed, loadConnectors]);
 
+  /* ── Actions ── */
   const handleTrigger = async () => {
     setTriggering(true);
     setMessage(null);
+    triggerTimeRef.current = Date.now();
     try {
-      // Save config first, then run pipeline with that config
       const saveResult = await api.savePipelineConfig(config);
       const configId = saveResult.id;
       setActiveConfigId(configId);
       await api.triggerPipeline(null, configId);
-      setMessage({ type: 'success', text: `Pipeline triggered with config #${configId}. Refresh in ~60s.` });
+      setMessage({ type: 'success', text: 'Intelligence scan launched successfully. Dashboard will update automatically.' });
       loadConfigs();
       setTimeout(loadHistory, 5000);
+      setTimeout(() => setTriggering(false), 35000);
     } catch (err) {
       setMessage({ type: 'error', text: err.message });
-    } finally {
       setTriggering(false);
     }
   };
@@ -136,9 +211,7 @@ export default function Pipeline() {
     setConfig((prev) => {
       const regions = prev.regions.includes(code)
         ? prev.regions.filter((r) => r !== code)
-        : prev.regions.length < 5
-          ? [...prev.regions, code]
-          : prev.regions;
+        : prev.regions.length < 10 ? [...prev.regions, code] : prev.regions;
       return { ...prev, regions };
     });
   };
@@ -161,10 +234,10 @@ export default function Pipeline() {
     });
   };
 
-  const addKeyword = () => {
-    const kw = keywordInput.trim().replace(/[^\w\s-]/g, '');
-    if (kw && !config.keywords.includes(kw) && config.keywords.length < 10) {
-      setConfig((prev) => ({ ...prev, keywords: [...prev.keywords, kw] }));
+  const addKeyword = (kw) => {
+    const clean = (kw || keywordInput).trim().replace(/[^\w\s-]/g, '');
+    if (clean && !config.keywords.includes(clean) && config.keywords.length < 10) {
+      setConfig((prev) => ({ ...prev, keywords: [...prev.keywords, clean] }));
       setKeywordInput('');
     }
   };
@@ -178,241 +251,196 @@ export default function Pipeline() {
     setActiveConfigId(null);
   };
 
-  const statusBadge = (status) => {
-    const map = {
-      completed: 'badge-green', completed_empty: 'badge-orange',
-      completed_filtered: 'badge-orange', running: 'badge-blue',
-      failed: 'badge-red', crashed: 'badge-red',
-    };
-    return map[status] || 'badge-purple';
-  };
-
-  const configSummaryParts = [];
-  if (config.regions.length > 0) configSummaryParts.push(`${config.regions.length} region${config.regions.length > 1 ? 's' : ''}`);
-  if (config.platforms.length > 0) configSummaryParts.push(config.platforms.join(', '));
-  if (config.categories.length > 0) configSummaryParts.push(`${config.categories.length} categories`);
-  if (config.keywords.length > 0) configSummaryParts.push(`${config.keywords.length} keywords`);
-  if (config.content_type !== 'all') configSummaryParts.push(config.content_type);
-
+  /* ── Derived ── */
   const presets = savedConfigs.filter((c) => c.is_preset);
+  const availableSuggestions = SUGGESTED_SIGNALS.filter(s => !config.keywords.includes(s));
+  const lastSuccessRun = history.find(r => r.status === 'completed');
+
+  const summaryItems = [
+    { label: 'Target Markets', value: config.regions.length > 0 ? config.regions.length <= 2 ? config.regions.map(r => ALL_REGIONS.find(x => x.code === r)?.label?.replace(/^..\s/, '') || r).join(', ') : `${config.regions.length} markets` : 'None selected' },
+    { label: 'Platforms', value: config.platforms.map(p => PLATFORM_NAMES[p] || p).join(' + ') || 'None' },
+    { label: 'Content Format', value: config.content_type === 'all' ? 'All Formats' : config.content_type === 'shorts' ? 'Shorts (<60s)' : 'Long Form (≥60s)' },
+    { label: 'Trend Signals', value: config.keywords.length > 0 ? config.keywords.join(', ') : 'Auto-detect' },
+    { label: 'Est. Runtime', value: estimateRuntime(config) },
+    { label: 'Scan Depth', value: estimateDepth(config), highlight: true },
+  ];
 
   return (
     <>
-      <div className="page-header">
-        <h2>Pipeline Control</h2>
-        <p>Configure filters, run the pipeline, and view execution history</p>
-      </div>
+      {/* ══════════ INTELLIGENCE STATUS BAR ══════════ */}
+      <IntelligenceStatusBar />
 
-      {/* Config Form */}
-      <div className="card" style={{ marginBottom: 'var(--space-xl)' }}>
-        <div className="card-header">
-          <span className="card-title">⚙️ Pipeline Configuration</span>
-          <div style={{ display: 'flex', gap: '0.5rem' }}>
-            <button className="btn btn-secondary" onClick={handleReset} style={{ fontSize: '0.75rem' }}>
-              ↺ Reset
-            </button>
-            <button className="btn btn-secondary" onClick={() => setShowPresetSave(!showPresetSave)} style={{ fontSize: '0.75rem' }}>
-              💾 Save Preset
-            </button>
-          </div>
+      {/* ── Hero Header ── */}
+      <div className="scan-hero">
+        <div className="scan-hero-text">
+          <h2>AI Market Intelligence</h2>
+          <p>Configure and launch an AI-powered scan of trending content across global markets</p>
         </div>
-
-        {/* Preset Save */}
-        {showPresetSave && (
-          <div className="pc-preset-save">
-            <input
-              className="text-input"
-              placeholder="Preset name..."
-              value={presetName}
-              onChange={(e) => setPresetName(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleSavePreset()}
-              style={{ flex: 1 }}
-            />
-            <button className="btn btn-primary" onClick={handleSavePreset} style={{ fontSize: '0.75rem' }}>Save</button>
-          </div>
-        )}
-
-        {/* Saved Presets */}
-        {presets.length > 0 && (
-          <div className="pc-section">
-            <label className="pc-label">📁 Saved Presets</label>
-            <div className="pc-preset-list">
-              {presets.map((p) => (
-                <div key={p.id} className={`pc-preset-chip${activeConfigId === p.id ? ' active' : ''}`}>
-                  <button className="pc-preset-btn" onClick={() => handleLoadConfig(p)}>{p.name}</button>
-                  <button className="pc-preset-del" onClick={() => handleDeleteConfig(p.id)}>×</button>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Regions */}
-        <div className="pc-section">
-          <label className="pc-label">🌍 Regions <span className="pc-hint">(max 5)</span></label>
-          <div className="pc-chip-grid">
-            {ALL_REGIONS.map((r) => (
-              <button
-                key={r.code}
-                className={`pc-chip${config.regions.includes(r.code) ? ' selected' : ''}`}
-                onClick={() => toggleRegion(r.code)}
-              >
-                {r.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Platforms */}
-        <div className="pc-section">
-          <label className="pc-label">📡 Platforms</label>
-          <div className="pc-chip-grid">
-            {['youtube', 'reddit'].map((p) => (
-              <button
-                key={p}
-                className={`pc-chip${config.platforms.includes(p) ? ' selected' : ''}`}
-                onClick={() => togglePlatform(p)}
-              >
-                {p === 'youtube' ? '▶️ YouTube' : '💬 Reddit'}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Categories */}
-        <div className="pc-section">
-          <label className="pc-label">🏷️ Categories <span className="pc-hint">(leave empty for all)</span></label>
-          <div className="pc-chip-grid">
-            {ALL_CATEGORIES.map((c) => (
-              <button
-                key={c}
-                className={`pc-chip${config.categories.includes(c) ? ' selected' : ''}`}
-                onClick={() => toggleCategory(c)}
-              >
-                {c}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Keywords */}
-        <div className="pc-section">
-          <label className="pc-label">🔑 Keywords <span className="pc-hint">(max 10, enables hybrid search)</span></label>
-          <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
-            <input
-              className="text-input"
-              placeholder="Add keyword..."
-              value={keywordInput}
-              onChange={(e) => setKeywordInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && addKeyword()}
-              style={{ flex: 1 }}
-            />
-            <button className="btn btn-primary" onClick={addKeyword} style={{ fontSize: '0.75rem' }}>+ Add</button>
-          </div>
-          {config.keywords.length > 0 && (
-            <div className="pc-chip-grid">
-              {config.keywords.map((kw) => (
-                <span key={kw} className="pc-keyword-tag">
-                  {kw}
-                  <button className="pc-keyword-del" onClick={() => removeKeyword(kw)}>×</button>
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Content Type */}
-        <div className="pc-section">
-          <label className="pc-label">📏 Content Type</label>
-          <div className="pc-chip-grid">
-            {[
-              { val: 'all', label: '📺 All' },
-              { val: 'shorts', label: '⚡ Shorts (<60s)' },
-              { val: 'long', label: '🎥 Long Form (≥60s)' },
-            ].map((ct) => (
-              <button
-                key={ct.val}
-                className={`pc-chip${config.content_type === ct.val ? ' selected' : ''}`}
-                onClick={() => setConfig((prev) => ({ ...prev, content_type: ct.val }))}
-              >
-                {ct.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Config Summary */}
-        <div className="pc-summary">
-          <span className="pc-summary-label">Config Summary:</span>
-          <span className="pc-summary-text">{configSummaryParts.join(' · ') || 'Default settings'}</span>
-        </div>
-
-        {/* Run Button */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginTop: '1rem' }}>
-          <button className="btn btn-primary" onClick={handleTrigger} disabled={triggering || config.regions.length === 0}>
-            {triggering ? (
-              <><span className="spinner" style={{ width: 14, height: 14, borderWidth: 2, marginRight: 6 }}></span>Running...</>
-            ) : (
-              <>&#9654; Run Pipeline</>
-            )}
+        <div className="scan-hero-actions">
+          <button className="btn btn-secondary" onClick={handleReset} style={{ fontSize: '0.75rem' }}>↺ Reset</button>
+          <button className="btn btn-secondary" onClick={() => setShowPresetSave(!showPresetSave)} style={{ fontSize: '0.75rem' }}>💾 Save Preset</button>
+          <button className="btn btn-secondary" onClick={() => setScanSection(!scanSection)} style={{ fontSize: '0.75rem' }}>
+            {scanSection ? '▾ Hide Config' : '▸ Show Config'}
           </button>
-          <button className="btn btn-secondary" onClick={loadHistory}>&#8635; Refresh History</button>
-          {config.regions.length === 0 && (
-            <span style={{ color: '#ef4444', fontSize: '0.75rem' }}>Select at least one region</span>
-          )}
         </div>
-        {message && (
-          <div style={{
-            marginTop: '1rem', padding: '0.75rem 1rem', borderRadius: 8,
-            fontSize: '0.8125rem', fontWeight: 500,
-            background: message.type === 'success' ? 'rgba(52,211,153,0.08)' : 'rgba(239,68,68,0.08)',
-            color: message.type === 'success' ? '#34d399' : '#ef4444',
-            border: `1px solid ${message.type === 'success' ? 'rgba(52,211,153,0.2)' : 'rgba(239,68,68,0.2)'}`,
-          }}>
-            {message.text}
-          </div>
+      </div>
+
+      {/* ══════════ CONNECTOR HEALTH ══════════ */}
+      <ConnectorHealthCards />
+
+      {/* ══════════ SCAN FLOW ══════════ */}
+      <ScanFlowVisualization isRunning={triggering} activeStage={triggering ? Math.min(Math.floor((Date.now() - (triggerTimeRef.current || Date.now())) / 6000), 5) : -1} />
+
+      {/* ── Preset Save ── */}
+      {showPresetSave && (
+        <div className="scan-preset-save">
+          <input className="text-input" placeholder="Name your preset..." value={presetName} onChange={(e) => setPresetName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSavePreset()} />
+          <button className="btn btn-primary" onClick={handleSavePreset} style={{ fontSize: '0.75rem' }}>Save</button>
+        </div>
+      )}
+
+      {/* ── Presets ── */}
+      {presets.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', marginBottom: 'var(--space-lg)' }}>
+          <span style={{ fontSize: 'var(--font-size-xs)', fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Quick Presets</span>
+          {presets.map((p) => (
+            <div key={p.id} className={`pc-preset-chip${activeConfigId === p.id ? ' active' : ''}`}>
+              <button className="pc-preset-btn" onClick={() => handleLoadConfig(p)}>{p.name}</button>
+              <button className="pc-preset-del" onClick={() => handleDeleteConfig(p.id)}>×</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ══════════ GUIDED STEPS (collapsible) ══════════ */}
+      {scanSection && (
+        <div className="scan-steps">
+          {/* STEP 1 — Markets */}
+          <StepCard number="1" title="Select Target Markets" description="Choose up to 10 geographic markets to scan." badge={`${config.regions.length} selected`} hasSelection={config.regions.length > 0}>
+            <div className="scan-chip-grid">
+              {ALL_REGIONS.map((r) => (
+                <button key={r.code} className={`scan-chip${config.regions.includes(r.code) ? ' selected' : ''}`} onClick={() => toggleRegion(r.code)}>
+                  {config.regions.includes(r.code) && <span className="scan-chip-check">✓</span>}
+                  {r.label}
+                </button>
+              ))}
+            </div>
+          </StepCard>
+
+          {/* STEP 2 — Platforms */}
+          <StepCard number="2" title="Choose Platforms" description="Select which content platforms to scan." badge={config.platforms.map(p => PLATFORM_NAMES[p] || p).join(', ')} hasSelection={config.platforms.length > 0}>
+            <div className="scan-chip-grid">
+              {[
+                { id: 'youtube', label: '▶️ YouTube', desc: 'Trending videos, shorts & creators' },
+                { id: 'reddit', label: '💬 Reddit', desc: 'Community discussions & viral posts' },
+                { id: 'tiktok', label: '🎵 TikTok', desc: 'Viral short-form video trends' },
+                { id: 'instagram', label: '📸 Instagram', desc: 'Reels, posts & hashtag trends' },
+              ].map((p) => (
+                <button key={p.id} className={`scan-chip${config.platforms.includes(p.id) ? ' selected' : ''}${(p.id === 'tiktok' || p.id === 'instagram') ? ' experimental' : ''}`} onClick={() => togglePlatform(p.id)} style={{ padding: '10px 20px' }}>
+                  {config.platforms.includes(p.id) && <span className="scan-chip-check">✓</span>}
+                  <span>{p.label}</span>
+                  {(p.id === 'tiktok' || p.id === 'instagram') && <span className="scan-chip-beta">BETA</span>}
+                </button>
+              ))}
+            </div>
+          </StepCard>
+
+          {/* STEP 3 — Content Domains */}
+          <StepCard number="3" title="Focus Content Domains" description="Narrow the scan to specific categories. Leave empty for all." badge={config.categories.length > 0 ? `${config.categories.length} selected` : 'All domains'} badgeType={config.categories.length > 0 ? 'active' : 'optional'} hasSelection={config.categories.length > 0}>
+            <div className="scan-chip-grid">
+              {ALL_CATEGORIES.map((c) => (
+                <button key={c} className={`scan-chip${config.categories.includes(c) ? ' selected' : ''}`} onClick={() => toggleCategory(c)} style={{ textTransform: 'capitalize' }}>
+                  {config.categories.includes(c) && <span className="scan-chip-check">✓</span>}
+                  {c}
+                </button>
+              ))}
+            </div>
+          </StepCard>
+
+          {/* STEP 4 — Trend Signals */}
+          <StepCard number="4" title="Add Trend Signals" description="Add keywords to target. AI will prioritize matching content." badge={config.keywords.length > 0 ? `${config.keywords.length} signals` : 'Auto-detect'} badgeType={config.keywords.length > 0 ? 'active' : 'optional'} hasSelection={config.keywords.length > 0}>
+            <div className="scan-keyword-area">
+              <div className="scan-keyword-input-row">
+                <input className="scan-keyword-input" placeholder='e.g. "AI", "growth hacking"...' value={keywordInput} onChange={(e) => setKeywordInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && addKeyword()} maxLength={50} />
+                <button className="scan-keyword-add-btn" onClick={() => addKeyword()}>+ Add</button>
+              </div>
+              {config.keywords.length > 0 && (
+                <div className="scan-keyword-tags">
+                  {config.keywords.map((kw) => (
+                    <span key={kw} className="scan-keyword-tag">{kw}<button className="scan-keyword-remove" onClick={() => removeKeyword(kw)}>×</button></span>
+                  ))}
+                </div>
+              )}
+              {availableSuggestions.length > 0 && (
+                <div className="scan-suggestions">
+                  <span className="scan-suggestions-label">💡 Trending:</span>
+                  {availableSuggestions.slice(0, 7).map((s) => (
+                    <button key={s} className="scan-suggestion-chip" onClick={() => addKeyword(s)}>+ {s}</button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </StepCard>
+
+          {/* STEP 5 — Content Format */}
+          <StepCard number="5" title="Choose Content Format" description="Filter by video length." badge={config.content_type === 'all' ? 'All formats' : config.content_type === 'shorts' ? 'Shorts' : 'Long form'} badgeType="optional" hasSelection={config.content_type !== 'all'}>
+            <div className="scan-chip-grid">
+              {[
+                { val: 'all', label: '📺 All Formats' },
+                { val: 'shorts', label: '⚡ Shorts' },
+                { val: 'long', label: '🎥 Long Form' },
+              ].map((ct) => (
+                <button key={ct.val} className={`scan-chip${config.content_type === ct.val ? ' selected' : ''}`} onClick={() => setConfig((prev) => ({ ...prev, content_type: ct.val }))} style={{ padding: '10px 20px' }}>
+                  {config.content_type === ct.val && <span className="scan-chip-check">✓</span>}
+                  {ct.label}
+                </button>
+              ))}
+            </div>
+          </StepCard>
+        </div>
+      )}
+
+      {/* ══════════ INTELLIGENCE SUMMARY ══════════ */}
+      <div className="scan-summary">
+        <div className="scan-summary-title"><span>🧠</span> Scan Configuration Summary</div>
+        <div className="scan-summary-grid">
+          {summaryItems.map((item) => (
+            <div key={item.label} className="scan-summary-item">
+              <span className="scan-summary-label">{item.label}</span>
+              <span className={`scan-summary-value${item.highlight ? ' highlight' : ''}`}>{item.value}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ══════════ LAUNCH AREA ══════════ */}
+      <div className="scan-launch-area">
+        <button className="scan-launch-btn" onClick={handleTrigger} disabled={triggering || config.regions.length === 0}>
+          {triggering ? (<><span className="spinner" />Scanning...</>) : (<>🚀 Launch Intelligence Scan</>)}
+        </button>
+        {config.regions.length === 0 && <span className="scan-launch-error">Select at least one target market to begin</span>}
+        {!triggering && config.regions.length > 0 && (
+          <span className="scan-launch-hint">
+            This will scan {config.regions.length} market{config.regions.length > 1 ? 's' : ''} across {config.platforms.map(p => PLATFORM_NAMES[p] || p).join(' & ')} · Est. {estimateRuntime(config)}
+          </span>
         )}
       </div>
 
-      {/* History Table */}
-      <div className="card">
-        <div className="card-header">
-          <span className="card-title">Execution History</span>
-          <span className="badge badge-blue">{history.length} runs</span>
+      {/* ── Status Message ── */}
+      {message && (
+        <div className={`scan-message ${message.type}`}>
+          {message.type === 'success' ? '✓' : '✕'} {message.text}
         </div>
-        {loading ? (
-          <div className="loading"><div className="spinner"></div>Loading history...</div>
-        ) : (
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>ID</th><th>Status</th><th>Started</th><th>Duration</th>
-                <th>Ingested</th><th>Processed</th><th>Enriched</th><th>Stored</th><th>Triggered By</th>
-              </tr>
-            </thead>
-            <tbody>
-              {history.map((r) => (
-                <tr key={r.id}>
-                  <td className="number-cell">#{r.id}</td>
-                  <td><span className={`badge ${statusBadge(r.status)}`}>{r.status}</span></td>
-                  <td style={{ color: '#8b90a0', fontSize: '0.75rem' }}>
-                    {r.started_at ? new Date(r.started_at).toLocaleString('de-DE') : '—'}
-                  </td>
-                  <td className="number-cell">{r.elapsed_seconds != null ? `${r.elapsed_seconds.toFixed(1)}s` : '—'}</td>
-                  <td className="number-cell">{r.videos_ingested ?? '—'}</td>
-                  <td className="number-cell">{r.videos_processed ?? '—'}</td>
-                  <td className="number-cell">{r.videos_enriched ?? '—'}</td>
-                  <td className="number-cell">{r.videos_stored ?? '—'}</td>
-                  <td><span className="badge badge-purple">{r.triggered_by || 'manual'}</span></td>
-                </tr>
-              ))}
-              {history.length === 0 && (
-                <tr><td colSpan={9} style={{ textAlign: 'center', color: '#5e6375' }}>No pipeline runs recorded yet</td></tr>
-              )}
-            </tbody>
-          </table>
-        )}
-      </div>
+      )}
+
+      {/* ── Pipeline Progress (while running) ── */}
+      {triggering && <RunningPipelineUX startTime={triggerTimeRef.current} platforms={config.platforms.map(p => PLATFORM_NAMES[p] || p)} />}
+
+      {/* ══════════ INTELLIGENCE CONFIDENCE ══════════ */}
+      <IntelligenceConfidence lastRun={lastSuccessRun} connectorData={connectorData} />
+
+      {/* ══════════ RECENT INTELLIGENCE RUNS ══════════ */}
+      <RunHistorySection history={history} loading={loading} onRefresh={loadHistory} onRerun={(run) => { /* future: reload config and trigger */ }} />
     </>
   );
 }

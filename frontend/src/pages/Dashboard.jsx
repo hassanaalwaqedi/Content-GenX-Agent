@@ -4,14 +4,10 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pi
 import { api } from '../api/client';
 import { useDataset } from '../context/DatasetContext';
 import EmptyDataset from '../components/EmptyDataset';
-
+import { getPlatformIcon, getPlatformLabel, fmt } from '../utils/platform';
 const COLORS = ['#4f8cff', '#34d399', '#f59e0b', '#a78bfa', '#ef4444', '#06b6d4', '#f472b6', '#22d3ee'];
 
-function fmt(n) {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
-  return String(n);
-}
+// fmt is now imported from utils/platform
 
 // ---------------------------------------------------------------------------
 // Skeleton Components
@@ -58,7 +54,7 @@ function TrendCard({ trend, onClick }) {
       </div>
       <div className="db-trend-stats">
         <span className="db-trend-stat">
-          <strong>{trend.count}</strong> videos
+          <strong>{trend.count}</strong> items
         </span>
         <span className="db-trend-stat">
           <strong>{fmt(trend.total_views || 0)}</strong> views
@@ -220,7 +216,7 @@ export default function Dashboard() {
             {activeDataset.config_keywords?.length > 0 && (
               <span className="dataset-meta-tag">🔑 {activeDataset.config_keywords.join(', ')}</span>
             )}
-            <span className="dataset-meta-tag">📊 {dsStats?.total_videos ?? stats?.total_videos ?? 0} videos</span>
+            <span className="dataset-meta-tag">📊 {dsStats?.total_videos ?? stats?.total_videos ?? 0} content items</span>
           </div>
         </div>
       )}
@@ -236,7 +232,7 @@ export default function Dashboard() {
             <div className="kpi-card">
               <div className="kpi-label">🔥 Active Trends</div>
               <div className="kpi-value blue">{trendsList.length}</div>
-              <div className="kpi-sub">Topics detected from {trends?.total_videos_analyzed || 0} videos</div>
+              <div className="kpi-sub">Topics detected from {trends?.total_videos_analyzed || 0} content items</div>
             </div>
             <div className="kpi-card">
               <div className="kpi-label">🚀 Top Opportunity</div>
@@ -259,8 +255,11 @@ export default function Dashboard() {
               <div className="kpi-label">📊 Total Content</div>
               <div className="kpi-value" style={{ color: '#22d3ee' }}>{fmt(stats?.total_videos || 0)}</div>
               <div className="kpi-sub">
-                {stats?.platform_stats?.youtube ? `🎬 ${stats.platform_stats.youtube}` : ''}
-                {stats?.platform_stats?.reddit ? ` • 💬 ${stats.platform_stats.reddit}` : ''}
+                {stats?.platform_stats ? Object.entries(stats.platform_stats).map(([platform, count], i) => (
+                  <span key={platform}>
+                    {i > 0 ? ' · ' : ''}{getPlatformIcon(platform)} {count}
+                  </span>
+                )) : ''}
               </div>
             </div>
           </>
@@ -412,7 +411,7 @@ export default function Dashboard() {
                   </div>
                   <span className="db-coverage-label">{transcriptStats.coverage_pct || 0}%</span>
                 </div>
-                <p className="kpi-sub">{transcriptStats.with_transcript || 0} / {transcriptStats.total_youtube || 0} videos</p>
+                <p className="kpi-sub">{transcriptStats.with_transcript || 0} / {transcriptStats.total_youtube || 0} YouTube videos</p>
               </div>
             )}
           </div>

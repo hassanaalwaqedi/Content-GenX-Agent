@@ -2,6 +2,38 @@ import { useEffect, useState, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { api } from '../api/client';
 import { exportTranscriptPDF } from '../api/export';
+import { getPlatformIcon, getPlatformLabel, getPlatformColor } from '../utils/platform';
+
+/** Build a source URL for any supported platform */
+function getSourceUrl(video) {
+  const id = video.video_id || '';
+  switch (video.platform) {
+    case 'tiktok': {
+      // TikTok IDs are prefixed with 'tiktok_'
+      const rawId = id.replace(/^tiktok_/, '');
+      return video.source_url || `https://www.tiktok.com/@${video.channel || 'video'}/video/${rawId}`;
+    }
+    case 'instagram': {
+      const rawId = id.replace(/^ig_/, '');
+      return video.source_url || `https://www.instagram.com/p/${rawId}/`;
+    }
+    case 'reddit':
+      return video.source_url || `https://www.reddit.com/search/?q=${encodeURIComponent(video.title)}`;
+    case 'youtube':
+    default:
+      return `https://www.youtube.com/watch?v=${id}`;
+  }
+}
+
+function getSourceLabel(platform) {
+  const labels = {
+    youtube: 'Open on YouTube',
+    tiktok: 'Open on TikTok',
+    instagram: 'Open on Instagram',
+    reddit: 'Search on Reddit',
+  };
+  return labels[platform] || `Open on ${getPlatformLabel(platform)}`;
+}
 
 function fmt(n) {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
@@ -80,12 +112,19 @@ export default function VideoDetail() {
 
   return (
     <>
-      <Link to="/videos" className="back-link">&#8592; Back to Videos</Link>
+      <Link to="/videos" className="back-link">&#8592; Back to Content</Link>
 
       <div className="page-header">
         <h2>{video.title}</h2>
         <p>
-          <span className="badge badge-purple">{video.niche}</span>
+          <span className="badge" style={{
+            background: `${getPlatformColor(video.platform)}22`,
+            color: getPlatformColor(video.platform),
+            border: `1px solid ${getPlatformColor(video.platform)}44`,
+          }}>
+            {getPlatformIcon(video.platform)} {getPlatformLabel(video.platform)}
+          </span>
+          <span className="badge badge-purple" style={{ marginLeft: '0.5rem' }}>{video.niche}</span>
           {video.channel && <span style={{ marginLeft: '0.75rem', color: '#8b90a0' }}>by {video.channel}</span>}
         </p>
       </div>
@@ -115,6 +154,65 @@ export default function VideoDetail() {
           <div className="kpi-value purple">{video.score?.toFixed(3)}</div>
         </div>
       </div>
+
+      {/* Hook Intelligence & Velocity */}
+      {(video.hook_text || video.trend_velocity > 0 || video.virality_score > 0) && (
+        <div className="card" style={{ marginBottom: '1.5rem' }}>
+          <div className="card-header">
+            <span className="card-title">🎯 Hook Intelligence & Velocity</span>
+          </div>
+          <div className="kpi-grid">
+            {video.hook_text && (
+              <div className="kpi-card" style={{ gridColumn: 'span 2' }}>
+                <div className="kpi-label">Hook Text</div>
+                <div style={{ fontSize: '0.85rem', color: 'var(--color-text-secondary)', fontStyle: 'italic', lineHeight: 1.6 }}>
+                  "{video.hook_text}"
+                </div>
+                {video.hook_category && (
+                  <span className="badge badge-purple" style={{ marginTop: 8, display: 'inline-block' }}>
+                    {video.hook_category}
+                  </span>
+                )}
+              </div>
+            )}
+            {video.trend_velocity > 0 && (
+              <div className="kpi-card">
+                <div className="kpi-label">Trend Velocity</div>
+                <div className="kpi-value" style={{ color: video.trend_velocity > 0.5 ? '#34d399' : '#f59e0b' }}>
+                  {(video.trend_velocity * 100).toFixed(1)}%
+                </div>
+              </div>
+            )}
+            {video.virality_score > 0 && (
+              <div className="kpi-card">
+                <div className="kpi-label">Virality Score</div>
+                <div className="kpi-value" style={{ color: video.virality_score > 0.01 ? '#34d399' : '#8b90a0' }}>
+                  {(video.virality_score * 100).toFixed(2)}%
+                </div>
+              </div>
+            )}
+            {video.shares > 0 && (
+              <div className="kpi-card">
+                <div className="kpi-label">Shares</div>
+                <div className="kpi-value blue">{fmt(video.shares)}</div>
+              </div>
+            )}
+            {video.saves > 0 && (
+              <div className="kpi-card">
+                <div className="kpi-label">Saves</div>
+                <div className="kpi-value green">{fmt(video.saves)}</div>
+              </div>
+            )}
+          </div>
+          {video.hashtags && (
+            <div style={{ marginTop: '1rem', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {video.hashtags.split(',').filter(Boolean).map(tag => (
+                <span key={tag} className="badge badge-blue" style={{ fontSize: '0.65rem' }}>#{tag.trim()}</span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Strategic Insights */}
       <div className="card" style={{ marginBottom: '1.5rem' }}>
@@ -181,7 +279,9 @@ export default function VideoDetail() {
               </>
             ) : (
               <span className="badge badge-orange">
-                {video.platform === 'reddit' ? 'N/A (Text post)' : 'Not available'}
+                {video.platform === 'reddit' ? 'N/A (Text post)'
+                  : ['tiktok', 'instagram'].includes(video.platform) ? 'Not available (audio only)'
+                  : 'Not available'}
               </span>
             )}
           </div>
@@ -271,7 +371,9 @@ export default function VideoDetail() {
           <p style={{ color: 'var(--color-text-muted, #5e6375)', fontStyle: 'italic', fontSize: '0.8125rem' }}>
             {video.platform === 'reddit'
               ? 'Transcripts are not applicable for Reddit posts.'
-              : 'No transcript available for this video. Captions may be disabled or not yet extracted.'}
+              : ['tiktok', 'instagram'].includes(video.platform)
+                ? 'Transcripts are not available for short-form content from this platform.'
+                : 'No transcript available for this video. Captions may be disabled or not yet extracted.'}
           </p>
         )}
       </div>
@@ -283,8 +385,15 @@ export default function VideoDetail() {
         </div>
         <table className="data-table">
           <tbody>
-            <tr><td style={{ fontWeight: 600, width: 160 }}>Video ID</td><td>{video.video_id}</td></tr>
-            <tr><td style={{ fontWeight: 600 }}>Platform</td><td>{video.platform === 'reddit' ? '💬 Reddit' : '🎬 YouTube'}</td></tr>
+            <tr><td style={{ fontWeight: 600, width: 160 }}>Content ID</td><td>{video.video_id}</td></tr>
+            <tr>
+              <td style={{ fontWeight: 600 }}>Platform</td>
+              <td>
+                <span style={{ color: getPlatformColor(video.platform) }}>
+                  {getPlatformIcon(video.platform)} {getPlatformLabel(video.platform)}
+                </span>
+              </td>
+            </tr>
             <tr>
               <td style={{ fontWeight: 600 }}>Published</td>
               <td>{video.published_at ? new Date(video.published_at).toLocaleDateString('de-DE', { year: 'numeric', month: 'long', day: 'numeric' }) : '—'}</td>
@@ -301,11 +410,14 @@ export default function VideoDetail() {
             <tr>
               <td style={{ fontWeight: 600 }}>Source Link</td>
               <td>
-                {video.platform === 'reddit' ? (
-                  <a href={`https://www.reddit.com/search/?q=${encodeURIComponent(video.title)}`} target="_blank" rel="noopener noreferrer">Search on Reddit ↗</a>
-                ) : (
-                  <a href={`https://www.youtube.com/watch?v=${video.video_id}`} target="_blank" rel="noopener noreferrer">Open on YouTube ↗</a>
-                )}
+                <a
+                  href={getSourceUrl(video)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ color: getPlatformColor(video.platform) }}
+                >
+                  {getSourceLabel(video.platform)} ↗
+                </a>
               </td>
             </tr>
             <tr><td style={{ fontWeight: 600 }}>Last Updated</td><td>{video.updated_at ? new Date(video.updated_at).toLocaleString('de-DE') : '—'}</td></tr>

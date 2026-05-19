@@ -4,14 +4,27 @@
  * All data endpoints support dataset_id for workspace scoping.
  */
 
-const BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
+// In development, use empty string so requests go through Vite proxy (same-origin).
+// In production, set VITE_API_URL to the actual backend URL.
+const BASE_URL = import.meta.env.VITE_API_URL || '';
 
 async function request(endpoint, options = {}) {
   const url = `${BASE_URL}${endpoint}`;
   const res = await fetch(url, {
     headers: { 'Content-Type': 'application/json', ...options.headers },
+    credentials: 'include', // Send cookies for auth
     ...options,
   });
+
+  // Handle 401 — redirect to login
+  if (res.status === 401) {
+    // Only redirect if we're not already on the login page
+    if (!window.location.pathname.startsWith('/login')) {
+      window.location.href = '/login';
+    }
+    throw new Error('Authentication required');
+  }
+
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail || `HTTP ${res.status}`);
@@ -33,9 +46,36 @@ function _appendDatasetId(params, datasetId) {
   }
 }
 
+// ---- Auth API ----
+export const authApi = {
+  login: (username, password) =>
+    fetch(`${BASE_URL}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ username, password }),
+    }).then(async (res) => {
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Login failed');
+      return data;
+    }),
+
+  logout: () =>
+    fetch(`${BASE_URL}/auth/logout`, {
+      method: 'POST',
+      credentials: 'include',
+    }).then((res) => res.json()),
+
+  me: () =>
+    fetch(`${BASE_URL}/auth/me`, {
+      credentials: 'include',
+    }).then((res) => res.json()),
+};
+
 export const api = {
   // ---- System ----
   getHealth: () => request('/health'),
+  getConnectorHealth: () => request('/connectors/health'),
   getStats: (datasetId) => {
     const params = new URLSearchParams();
     _appendDatasetId(params, datasetId);

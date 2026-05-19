@@ -39,8 +39,17 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-# Curated regions — India (IN) excluded to reduce noise/irrelevant content
-ALLOWED_REGIONS = ["US", "GB", "CA", "DE", "FR", "AU", "AE"]
+# Curated regions — India (IN) excluded per policy
+ALLOWED_REGIONS = [
+    # Americas
+    "US", "CA", "BR", "MX",
+    # Europe
+    "GB", "DE", "FR", "NL", "ES", "IT", "SE", "CH", "PL", "NO",
+    # Middle East
+    "AE", "SA", "KW", "QA", "BH", "EG", "TR",
+    # Asia-Pacific
+    "AU", "JP", "KR", "SG",
+]
 
 # YouTube video category ID → readable label
 YOUTUBE_CATEGORY_MAP = {

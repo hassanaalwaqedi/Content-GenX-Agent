@@ -30,6 +30,8 @@ from reddit_ingestion import ingest_reddit_posts
 from processing import process_videos
 from ai_enrichment import enrich_videos
 from transcripts import fetch_transcript
+from analytics.trend_velocity import TrendVelocityEngine
+from analytics.hooks import HookAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -141,8 +143,16 @@ def run_pipeline(triggered_by: str = "manual", config_id: int | None = None) -> 
                 return result
 
         # ---- Step 2: Ingest -------------------------------------------------
-        logger.info("Step 2/6 -- Ingesting content...")
+        logger.info("Step 2/7 -- Ingesting content...")
         raw_videos = []
+
+        # Use ConnectorRegistry for TikTok and Instagram
+        try:
+            from connectors.registry import ConnectorRegistry
+            registry = ConnectorRegistry()
+        except Exception as exc:
+            logger.warning("ConnectorRegistry unavailable: %s — falling back to legacy.", exc)
+            registry = None
 
         if "youtube" in platforms:
             yt_videos = ingest_videos(config=pipeline_cfg)
@@ -154,13 +164,65 @@ def run_pipeline(triggered_by: str = "manual", config_id: int | None = None) -> 
             logger.info("Reddit: %d posts ingested.", len(reddit_posts))
             raw_videos.extend(reddit_posts)
 
+        # New connectors via registry (TikTok, Instagram, future platforms)
+        connector_platforms = [p for p in platforms if p not in ("youtube", "reddit")]
+        if registry and connector_platforms:
+            keywords = pipeline_cfg.keywords if pipeline_cfg else []
+            for platform_id in connector_platforms:
+                connector = registry.get_connector(platform_id)
+                if not connector:
+                    logger.warning(
+                        "Connector '%s' requested but not available — skipping.",
+                        platform_id,
+                    )
+                    continue
+
+                try:
+                    # Fetch trending
+                    content = connector.safe_fetch_trending(limit=30)
+                    logger.info(
+                        "%s: %d trending items fetched.",
+                        connector.platform_name,
+                        len(content),
+                    )
+
+                    # Fetch by keywords if configured
+                    if keywords:
+                        kw_content = connector.safe_fetch_by_keywords(
+                            keywords, limit=20
+                        )
+                        content.extend(kw_content)
+                        logger.info(
+                            "%s: %d keyword items fetched.",
+                            connector.platform_name,
+                            len(kw_content),
+                        )
+
+                    # Convert to legacy format for existing pipeline
+                    for item in content:
+                        raw_videos.append(item.to_raw_video())
+
+                    logger.info(
+                        "%s: %d total items added to pipeline. Metrics: %s",
+                        connector.platform_name,
+                        len(content),
+                        connector.metrics.to_dict(),
+                    )
+
+                except Exception as exc:
+                    logger.error(
+                        "%s connector failed (graceful degradation): %s",
+                        platform_id,
+                        exc,
+                    )
+
         result["ingested"] = len(raw_videos)
         logger.info("Total ingestion: %d items.", len(raw_videos))
 
         if not raw_videos:
             logger.warning("No content ingested -- check API keys.")
             result["status"] = "completed_empty"
-            result["error"] = "Zero items ingested -- check YouTube/Reddit API keys."
+            result["error"] = "Zero items ingested -- check API keys."
             return result
 
         # ---- Step 2b: Purge stale data (AFTER successful ingestion) ---------
@@ -183,17 +245,31 @@ def run_pipeline(triggered_by: str = "manual", config_id: int | None = None) -> 
             return result
 
         # ---- Step 4: AI Enrichment ------------------------------------------
-        logger.info("Step 4/6 -- Enriching with AI metadata...")
+        logger.info("Step 4/7 -- Enriching with AI metadata...")
         enriched = enrich_videos(processed)
         result["enriched"] = len(enriched)
         logger.info("Enrichment complete: %d videos enriched.", len(enriched))
 
+        # ---- Step 4b: Hook Analysis & Velocity Scoring ----------------------
+        logger.info("Step 4b/7 -- Hook analysis & velocity scoring...")
+        try:
+            hook_analyzer = HookAnalyzer()
+            hook_analyzer.analyze_batch(enriched)
+
+            velocity_engine = TrendVelocityEngine()
+            velocity_engine.score_batch(enriched)
+
+            logger.info("Hook analysis and velocity scoring complete.")
+        except Exception as exc:
+            logger.warning("Analytics engines failed (non-critical): %s", exc)
+
         # ---- Step 5: Transcript Extraction ----------------------------------
-        logger.info("Step 5/6 -- Extracting transcripts (YouTube only)...")
+        logger.info("Step 5/7 -- Extracting transcripts (YouTube only)...")
         transcript_count = 0
         for idx, video in enumerate(enriched):
             vid_id = video.get("video_id", "")
-            if vid_id and not vid_id.startswith("reddit_"):
+            platform = video.get("platform", "youtube")
+            if vid_id and platform == "youtube":
                 transcript = fetch_transcript(vid_id)
                 if transcript:
                     video["transcript"] = transcript
@@ -206,7 +282,7 @@ def run_pipeline(triggered_by: str = "manual", config_id: int | None = None) -> 
         logger.info("Transcripts extracted: %d/%d videos.", transcript_count, len(enriched))
 
         # ---- Step 6: Store --------------------------------------------------
-        logger.info("Step 6/6 -- Storing in database (upsert)...")
+        logger.info("Step 6/7 -- Storing in database (upsert)...")
         # Tag every video with the pipeline run ID for dataset isolation
         for video in enriched:
             video["pipeline_run_id"] = run_id

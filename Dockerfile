@@ -2,13 +2,17 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install dependencies
+# Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application files
 COPY *.py .
 COPY .env.example .env.example
+
+# Copy connector and analytics packages
+COPY connectors/ ./connectors/
+COPY analytics/ ./analytics/
 
 # Create data directory
 RUN mkdir -p /app/data
@@ -22,4 +26,3 @@ HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
 
 # Run with uvicorn on port 80
 CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "80"]
-

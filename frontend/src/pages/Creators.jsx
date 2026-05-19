@@ -1,13 +1,9 @@
 import { useEffect, useState, useCallback } from 'react';
 import { api } from '../api/client';
 import { useDataset } from '../context/DatasetContext';
-
+import { getPlatformIcon, getPlatformLabel, fmt } from '../utils/platform';
 /* ── helpers ── */
-function fmt(n) {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
-  return String(n ?? 0);
-}
+// fmt is now imported from utils/platform
 function pct(v) { return ((v || 0) * 100).toFixed(1) + '%'; }
 function scoreColor(v) {
   if (v >= 0.6) return 'var(--color-accent-green)';
@@ -84,7 +80,7 @@ function CreatorCard({ creator, onClick }) {
             {creator.channel || 'Unknown'}
           </h3>
           <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)' }}>
-            {creator.video_count} videos · {fmt(creator.total_views)} views
+            {creator.video_count} content items · {fmt(creator.total_views)} views
           </span>
         </div>
         <div style={{
@@ -143,7 +139,7 @@ function RisingCard({ creator, onClick }) {
       </h4>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)' }}>
-          {creator.video_count} videos
+          {creator.video_count} content items
         </span>
         <span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 700, color: vel.color }}>
           {vel.label} growth
@@ -279,7 +275,7 @@ function CreatorModal({ creator, videos, loading, onClose }) {
 
         {/* Top Videos */}
         <h4 style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>
-          🎬 Top Performing Videos
+          🎨 Top Performing Content
         </h4>
         {loading ? (
           <div className="loading"><div className="spinner"></div>Loading videos...</div>

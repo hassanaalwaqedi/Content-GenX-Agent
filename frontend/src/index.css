@@ -939,6 +939,14 @@ html * {
   background: var(--color-bg-input); color: var(--color-text-muted); border: 1px solid var(--color-border);
 }
 
+/* Audio name (TikTok/Instagram) */
+.vcard-audio {
+  display: flex; align-items: center; gap: 6px; margin-top: 4px;
+  font-size: 0.65rem; color: var(--color-accent-purple);
+  background: var(--color-accent-purple-bg); padding: 3px 8px;
+  border-radius: 100px; width: fit-content;
+  border: 1px solid rgba(167, 139, 250, 0.15);
+}
 /* Actions */
 .vcard-actions { display: flex; gap: var(--space-sm); margin-top: var(--space-sm); }
 .vcard-btn {

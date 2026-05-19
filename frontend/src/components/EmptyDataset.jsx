@@ -18,7 +18,7 @@ export default function EmptyDataset({ message, datasetLabel }) {
         <ul>
           <li>Add more regions in pipeline config</li>
           <li>Remove restrictive keyword filters</li>
-          <li>Enable both shorts and long-form content</li>
+          <li>Enable more platforms (YouTube, TikTok, Instagram, Reddit)</li>
           <li>Switch to a different dataset workspace</li>
         </ul>
       </div>
