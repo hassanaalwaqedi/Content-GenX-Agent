@@ -43,12 +43,27 @@ _LOCKOUT_SECONDS = 60
 _failed_attempts: Dict[str, list] = defaultdict(list)
 
 
+_cached_fallback_secret: Optional[str] = None
+
+
 def _get_auth_settings():
     """Load auth settings from config (lazy to avoid import cycles)."""
+    global _cached_fallback_secret
     from config import get_settings
 
     s = get_settings()
-    secret = s.genx_auth_secret or os.urandom(32).hex()
+    secret = s.genx_auth_secret
+    if not secret:
+        # Generate a fallback secret ONCE and cache it for the process lifetime.
+        # Without this, os.urandom() would produce a new secret on every call,
+        # making every previously-issued token immediately invalid.
+        if _cached_fallback_secret is None:
+            _cached_fallback_secret = os.urandom(32).hex()
+            logger.warning(
+                "⚠ GENX_AUTH_SECRET not set — using auto-generated secret. "
+                "Sessions will NOT survive server restarts."
+            )
+        secret = _cached_fallback_secret
     return {
         "username": s.genx_admin_username,
         "password": s.genx_admin_password,
