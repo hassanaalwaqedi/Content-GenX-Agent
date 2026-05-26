@@ -107,8 +107,9 @@ INSERT INTO videos (
     hashtags, audio_name, hook_text, hook_category,
     trend_velocity, virality_score, shares, saves,
     author_followers, source_url, raw_payload,
+    relevance_score, matched_keywords, matched_hashtags, match_reason,
     created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(video_id) DO UPDATE SET
     views             = excluded.views,
     likes             = excluded.likes,
@@ -137,6 +138,10 @@ ON CONFLICT(video_id) DO UPDATE SET
     author_followers  = CASE WHEN excluded.author_followers > 0 THEN excluded.author_followers ELSE videos.author_followers END,
     source_url        = CASE WHEN excluded.source_url != '' THEN excluded.source_url ELSE videos.source_url END,
     raw_payload       = CASE WHEN excluded.raw_payload != '' THEN excluded.raw_payload ELSE videos.raw_payload END,
+    relevance_score   = CASE WHEN excluded.relevance_score > 0 THEN excluded.relevance_score ELSE videos.relevance_score END,
+    matched_keywords  = CASE WHEN excluded.matched_keywords != '' THEN excluded.matched_keywords ELSE videos.matched_keywords END,
+    matched_hashtags  = CASE WHEN excluded.matched_hashtags != '' THEN excluded.matched_hashtags ELSE videos.matched_hashtags END,
+    match_reason      = CASE WHEN excluded.match_reason != '' THEN excluded.match_reason ELSE videos.match_reason END,
     updated_at        = excluded.updated_at;
 """
 
@@ -205,6 +210,11 @@ _COLUMN_MIGRATIONS = [
     ("author_followers", "INTEGER DEFAULT 0"),
     ("source_url", "TEXT DEFAULT ''"),
     ("raw_payload", "TEXT DEFAULT ''"),
+    # ---- Relevance Intelligence additions ----
+    ("relevance_score", "REAL DEFAULT 0.0"),
+    ("matched_keywords", "TEXT DEFAULT ''"),
+    ("matched_hashtags", "TEXT DEFAULT ''"),
+    ("match_reason", "TEXT DEFAULT ''"),
 ]
 
 # Migrations for pipeline_runs table
@@ -359,6 +369,11 @@ def insert_videos(videos: List[dict]) -> int:
                         v.get("author_followers", 0),
                         v.get("source_url", ""),
                         v.get("raw_payload", ""),
+                        # Relevance intelligence fields
+                        v.get("relevance_score", 0.0),
+                        v.get("matched_keywords", ""),
+                        v.get("matched_hashtags", ""),
+                        v.get("match_reason", ""),
                         now,  # created_at
                         now,  # updated_at
                     ),

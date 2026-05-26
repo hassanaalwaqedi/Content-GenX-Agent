@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { api } from '../api/client';
 import { useDataset } from '../context/DatasetContext';
-import { getPlatformIcon, getPlatformLabel, fmt } from '../utils/platform';
+import { getPlatformLabel, fmt } from '../utils/platform';
 /* ── helpers ── */
 // fmt is now imported from utils/platform
 function pct(v) { return ((v || 0) * 100).toFixed(1) + '%'; }

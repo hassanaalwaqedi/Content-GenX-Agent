@@ -163,6 +163,30 @@ class Settings(BaseSettings):
     velocity_weight_recency: float = Field(default=0.20)
     velocity_weight_shares: float = Field(default=0.15)
 
+    # ---- Relevance Scoring -------------------------------------------------
+    relevance_threshold: int = Field(
+        default=55, ge=0, le=100,
+        description="Minimum relevance score (0-100) to keep content. Content below this is rejected.",
+    )
+    relevance_skip_youtube: bool = Field(
+        default=True,
+        description="Skip relevance scoring for YouTube (already relevant via API search).",
+    )
+    relevance_skip_trending: bool = Field(
+        default=True,
+        description="Skip relevance scoring for trending-only pipeline runs (no keywords).",
+    )
+
+    # ---- Query Intelligence ------------------------------------------------
+    query_max_synonyms: int = Field(
+        default=5, ge=1, le=20,
+        description="Maximum synonym expansions per keyword.",
+    )
+    query_max_hashtag_variants: int = Field(
+        default=8, ge=1, le=20,
+        description="Maximum hashtag variants to try per keyword.",
+    )
+
     # ---- Reddit Search Keywords (NOT used for YouTube) ----------------------
     niche_keywords: List[str] = Field(
         default=[

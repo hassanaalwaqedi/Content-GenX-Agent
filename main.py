@@ -178,24 +178,31 @@ def run_pipeline(triggered_by: str = "manual", config_id: int | None = None) -> 
                     continue
 
                 try:
-                    # Fetch trending
-                    content = connector.safe_fetch_trending(limit=30)
-                    logger.info(
-                        "%s: %d trending items fetched.",
-                        connector.platform_name,
-                        len(content),
-                    )
+                    content = []
 
-                    # Fetch by keywords if configured
                     if keywords:
+                        # ── Keyword-aware retrieval ──
+                        # fetch_by_keywords now handles the full strategy:
+                        #   keyword search → hashtag search → trending fallback
+                        # So we do NOT call safe_fetch_trending() separately
+                        # when keywords are configured.
                         kw_content = connector.safe_fetch_by_keywords(
-                            keywords, limit=20
+                            keywords, limit=30
                         )
                         content.extend(kw_content)
                         logger.info(
-                            "%s: %d keyword items fetched.",
+                            "%s: %d keyword-intelligent items fetched.",
                             connector.platform_name,
                             len(kw_content),
+                        )
+                    else:
+                        # ── Trending-only (no keywords) ──
+                        trending = connector.safe_fetch_trending(limit=30)
+                        content.extend(trending)
+                        logger.info(
+                            "%s: %d trending items fetched.",
+                            connector.platform_name,
+                            len(trending),
                         )
 
                     # Convert to legacy format for existing pipeline
@@ -228,13 +235,74 @@ def run_pipeline(triggered_by: str = "manual", config_id: int | None = None) -> 
         # ---- Step 2b: Purge stale data (AFTER successful ingestion) ---------
         # Only purge old data once we've confirmed new data is available.
         # This prevents the "purge everything → fail to ingest → empty DB" scenario.
-        logger.info("Step 2b/6 -- Purging stale YouTube data (>7 days)...")
+        logger.info("Step 2b/7 -- Purging stale YouTube data (>7 days)...")
         stale_count = purge_stale_youtube_videos()
         result["stale_purged"] = stale_count
         logger.info("Purged %d stale records.", stale_count)
 
+        # ---- Step 2c: Relevance Scoring (TikTok/Instagram only) -------------
+        # Score non-YouTube content against the user's keyword intent.
+        # YouTube is skipped because its API already has strong relevance.
+        keywords = pipeline_cfg.keywords if pipeline_cfg else []
+        if keywords:
+            try:
+                from services.query_intelligence import QueryIntelligenceEngine
+                from analytics.relevance_engine import ContentRelevanceEngine
+
+                settings = get_settings()
+
+                if not settings.relevance_skip_trending or keywords:
+                    qi = QueryIntelligenceEngine(
+                        max_synonyms=settings.query_max_synonyms,
+                        max_hashtag_variants=settings.query_max_hashtag_variants,
+                    )
+                    contexts = qi.expand_multi(keywords)
+                    query_ctx = qi.merge_contexts(contexts) if len(contexts) > 1 else (contexts[0] if contexts else None)
+
+                    if query_ctx:
+                        relevance_engine = ContentRelevanceEngine(
+                            threshold=settings.relevance_threshold,
+                        )
+
+                        # Separate YouTube (skip scoring) from other platforms
+                        youtube_items = [v for v in raw_videos if v.get("platform", "youtube") == "youtube"]
+                        reddit_items = [v for v in raw_videos if v.get("platform") == "reddit"]
+                        other_items = [
+                            v for v in raw_videos
+                            if v.get("platform", "youtube") not in ("youtube", "reddit")
+                        ]
+
+                        if other_items:
+                            logger.info(
+                                "Step 2c/7 -- Relevance scoring %d non-YouTube items...",
+                                len(other_items),
+                            )
+                            passed, rejected = relevance_engine.score_batch(
+                                other_items, query_ctx
+                            )
+
+                            # Also score YouTube items for metadata (but don't filter them)
+                            for yt in youtube_items:
+                                relevance_engine.score_content_item(yt, query_ctx)
+
+                            raw_videos = youtube_items + reddit_items + passed
+                            result["relevance_rejected"] = len(rejected)
+                            logger.info(
+                                "Relevance filtering: %d passed, %d rejected (threshold=%d).",
+                                len(passed), len(rejected), settings.relevance_threshold,
+                            )
+                        else:
+                            logger.info("Step 2c/7 -- No non-YouTube content to score.")
+                            # Still score YouTube for metadata
+                            for yt in youtube_items:
+                                relevance_engine.score_content_item(yt, query_ctx)
+            except Exception as exc:
+                logger.warning(
+                    "Relevance scoring failed (non-critical, pipeline continues): %s", exc
+                )
+
         # ---- Step 3: Process ------------------------------------------------
-        logger.info("Step 3/6 -- Processing and scoring...")
+        logger.info("Step 3/7 -- Processing and scoring...")
         processed = process_videos(raw_videos, config=pipeline_cfg)
         result["processed"] = len(processed)
         logger.info("Processing complete: %d videos passed filters.", len(processed))

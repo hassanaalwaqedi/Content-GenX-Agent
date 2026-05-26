@@ -947,6 +947,43 @@ html * {
   border-radius: 100px; width: fit-content;
   border: 1px solid rgba(167, 139, 250, 0.15);
 }
+
+/* Relevance Intelligence */
+.vcard-relevance {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
+  margin-top: 4px;
+}
+.vcard-relevance-score {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 0.65rem; font-weight: 700; padding: 2px 8px;
+  border-radius: 100px; cursor: help;
+  transition: all var(--transition-fast);
+}
+.vcard-relevance-score.relevance-high {
+  background: var(--color-accent-green-bg); color: var(--color-accent-green);
+  border: 1px solid rgba(52, 211, 153, 0.25);
+}
+.vcard-relevance-score.relevance-mid {
+  background: var(--color-accent-orange-bg); color: var(--color-accent-orange);
+  border: 1px solid rgba(251, 191, 36, 0.25);
+}
+.vcard-relevance-score.relevance-low {
+  background: var(--color-accent-red-bg); color: var(--color-accent-red);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+}
+.vcard-relevance-match {
+  font-size: 0.6rem; padding: 1px 6px; border-radius: 100px;
+  white-space: nowrap; max-width: 120px;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.vcard-relevance-match.kw {
+  background: rgba(79, 140, 255, 0.1); color: var(--color-primary);
+  border: 1px solid rgba(79, 140, 255, 0.2);
+}
+.vcard-relevance-match.ht {
+  background: rgba(167, 139, 250, 0.1); color: var(--color-accent-purple);
+  border: 1px solid rgba(167, 139, 250, 0.2);
+}
 /* Actions */
 .vcard-actions { display: flex; gap: var(--space-sm); margin-top: var(--space-sm); }
 .vcard-btn {

@@ -1,11 +1,12 @@
 import { useEffect, useState, useCallback } from 'react';
 import { api } from '../../api/client';
+import PlatformIcon from '../PlatformIcon';
 
 const PLATFORM_META = {
-  youtube: { icon: '▶️', label: 'YouTube', accent: '#ff4444', accentBg: 'rgba(255,68,68,0.08)' },
-  reddit: { icon: '💬', label: 'Reddit', accent: '#ff6633', accentBg: 'rgba(255,102,51,0.08)' },
-  tiktok: { icon: '🎵', label: 'TikTok', accent: '#ff2d75', accentBg: 'rgba(255,45,117,0.08)' },
-  instagram: { icon: '📸', label: 'Instagram', accent: '#c837ab', accentBg: 'rgba(200,55,171,0.08)' },
+  youtube: { label: 'YouTube', accent: '#ff4444', accentBg: 'rgba(255,68,68,0.08)' },
+  reddit: { label: 'Reddit', accent: '#ff6633', accentBg: 'rgba(255,102,51,0.08)' },
+  tiktok: { label: 'TikTok', accent: '#ff2d75', accentBg: 'rgba(255,45,117,0.08)' },
+  instagram: { label: 'Instagram', accent: '#c837ab', accentBg: 'rgba(200,55,171,0.08)' },
 };
 
 const STATUS_CONFIG = {
@@ -17,13 +18,13 @@ const STATUS_CONFIG = {
 };
 
 function ConnectorCard({ platformId, health }) {
-  const meta = PLATFORM_META[platformId] || { icon: '⚡', label: platformId, accent: '#4f8cff', accentBg: 'rgba(79,140,255,0.08)' };
+  const meta = PLATFORM_META[platformId] || { label: platformId, accent: '#4f8cff', accentBg: 'rgba(79,140,255,0.08)' };
   const statusCfg = STATUS_CONFIG[health?.status] || STATUS_CONFIG.unknown;
 
   return (
     <div className={`chc-card ${health?.status || 'unknown'}`} style={{ '--platform-accent': meta.accent, '--platform-accent-bg': meta.accentBg }}>
       <div className="chc-card-header">
-        <div className="chc-card-icon">{meta.icon}</div>
+        <div className="chc-card-icon"><PlatformIcon platform={platformId} size={20} color={meta.accent} /></div>
         <div className="chc-card-name">{meta.label}</div>
         <div className={`chc-card-status ${statusCfg.cls}`}>
           <span className={`chc-dot ${statusCfg.dot}`} />

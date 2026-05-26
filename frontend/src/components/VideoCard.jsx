@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom';
-import { getPlatformIcon, getPlatformLabel, fmt } from '../utils/platform';
+import { getPlatformLabel, fmt } from '../utils/platform';
+import PlatformIcon from './PlatformIcon';
 
 const DEFAULT_THUMBNAIL = 'https://via.placeholder.com/320x180.png?text=No+Thumbnail';
 
@@ -73,7 +74,7 @@ export default function VideoCard({ video, onTranscript, onGenerate }) {
         </Link>
 
         <p className="vcard-channel">
-          {getPlatformIcon(video.platform)} {video.channel || 'Unknown'}
+          <PlatformIcon platform={video.platform} size={14} /> {video.channel || 'Unknown'}
           {video.source_region && (
             <span className="vcard-region-badge" title={`Source: ${video.source_region}`}>
               {REGION_FLAGS[video.source_region] || '🌐'} {video.source_region}
@@ -112,6 +113,31 @@ export default function VideoCard({ video, onTranscript, onGenerate }) {
           <div className="vcard-audio">
             <span className="vcard-stat-icon">🎶</span>
             <span>{video.audio_name}</span>
+          </div>
+        )}
+
+        {/* Relevance Intelligence Badge */}
+        {video.relevance_score > 0 && (
+          <div className="vcard-relevance">
+            <span
+              className={`vcard-relevance-score ${
+                video.relevance_score > 75 ? 'relevance-high' :
+                video.relevance_score > 55 ? 'relevance-mid' : 'relevance-low'
+              }`}
+              title={video.match_reason || 'Relevance score'}
+            >
+              🎯 {video.relevance_score}%
+            </span>
+            {video.matched_keywords && video.matched_keywords.split(',').filter(Boolean).slice(0, 3).map((kw, i) => (
+              <span key={`kw-${i}`} className="vcard-relevance-match kw">
+                {kw.trim()}
+              </span>
+            ))}
+            {video.matched_hashtags && video.matched_hashtags.split(',').filter(Boolean).slice(0, 2).map((ht, i) => (
+              <span key={`ht-${i}`} className="vcard-relevance-match ht">
+                {ht.trim()}
+              </span>
+            ))}
           </div>
         )}
 

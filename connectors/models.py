@@ -95,6 +95,24 @@ class NormalizedContent(BaseModel):
     # ---- Trend Velocity ----------------------------------------------------
     trend_velocity: float = Field(default=0.0, ge=0.0)
 
+    # ---- Relevance Intelligence --------------------------------------------
+    relevance_score: int = Field(
+        default=0, ge=0, le=100,
+        description="Query relevance score (0-100). 0 = not scored.",
+    )
+    matched_keywords: List[str] = Field(
+        default_factory=list,
+        description="Keywords that matched this content",
+    )
+    matched_hashtags: List[str] = Field(
+        default_factory=list,
+        description="Hashtags that matched the query",
+    )
+    match_reason: str = Field(
+        default="",
+        description="Human-readable explanation of why this content was selected",
+    )
+
     # ---- Source ------------------------------------------------------------
     source_url: str = Field(default="", description="Direct link to content")
     raw_payload: Dict[str, Any] = Field(
@@ -139,6 +157,11 @@ class NormalizedContent(BaseModel):
             "author_followers": self.author_followers,
             "source_url": self.source_url,
             "raw_payload": json.dumps(self.raw_payload) if self.raw_payload else "",
+            # Relevance intelligence
+            "relevance_score": self.relevance_score,
+            "matched_keywords": ",".join(self.matched_keywords) if self.matched_keywords else "",
+            "matched_hashtags": ",".join(self.matched_hashtags) if self.matched_hashtags else "",
+            "match_reason": self.match_reason,
         }
 
     def to_dict(self) -> Dict[str, Any]:

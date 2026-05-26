@@ -223,6 +223,10 @@ class VideoResponse(BaseModel):
     content_gap: Optional[str] = None
     source_region: Optional[str] = None
     content_type: Optional[str] = None
+    relevance_score: Optional[float] = None
+    matched_keywords: Optional[str] = None
+    matched_hashtags: Optional[str] = None
+    match_reason: Optional[str] = None
 
 
 class VideoDetailResponse(BaseModel):
@@ -246,6 +250,10 @@ class VideoDetailResponse(BaseModel):
     transcript: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+    relevance_score: Optional[float] = None
+    matched_keywords: Optional[str] = None
+    matched_hashtags: Optional[str] = None
+    match_reason: Optional[str] = None
 
 
 class CreatorResponse(BaseModel):

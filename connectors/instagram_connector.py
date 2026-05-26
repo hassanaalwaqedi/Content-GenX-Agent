@@ -242,43 +242,222 @@ class InstagramConnector(BaseConnector):
         **kwargs: Any,
     ) -> List[NormalizedContent]:
         """
-        Fetch Instagram content related to keywords.
+        Fetch Instagram content related to keywords using intelligent
+        hashtag-cluster search with local relevance scoring.
 
-        Maps keywords to relevant creator niches and fetches their content.
+        Strategy:
+            1. Expand keywords via QueryIntelligenceEngine into Instagram
+               hashtag clusters and niche-specific search terms
+            2. Try hashtag-based retrieval for each generated hashtag
+            3. Fall back to keyword-matched creator profiles
+            4. Score every fetched post locally and reject irrelevant content
         """
         self._logger.info(
-            "Instagram: keyword search mapped to creator profiles for: %s",
-            keywords,
+            "Instagram: intelligent keyword search for: %s", keywords,
         )
 
-        # Find matching niche creators for the keywords
-        creators_to_scan: List[str] = []
-        kw_lower = [kw.lower() for kw in keywords]
+        # ── Step 0: Expand keywords via Query Intelligence ──
+        query_context = None
+        ig_hashtags: List[str] = []
+        creator_keywords: List[str] = []
 
-        for niche, creators in _DEFAULT_CREATORS.items():
-            # Check if any keyword matches this niche
-            if any(
-                niche in kw or kw in niche
-                for kw in kw_lower
-            ):
-                creators_to_scan.extend(creators)
+        try:
+            from services.query_intelligence import QueryIntelligenceEngine
+            qi = QueryIntelligenceEngine()
+            contexts = qi.expand_multi(keywords)
+            if contexts:
+                query_context = qi.merge_contexts(contexts) if len(contexts) > 1 else contexts[0]
+                # Extract hashtag targets (strip # prefix for API)
+                ig_hashtags = [
+                    v.lstrip("#") for v in query_context.instagram_variants
+                    if v.startswith("#")
+                ]
+                # Use normalized terms for creator matching
+                creator_keywords = list(query_context.normalized_terms)
 
-        # If no niche match, scan general + keyword-as-username
-        if not creators_to_scan:
-            creators_to_scan.extend(_DEFAULT_CREATORS.get("general", []))
-            # Try keywords as usernames directly (e.g., "elonmusk")
-            for kw in keywords:
-                clean = re.sub(r"[^a-zA-Z0-9._]", "", kw.lower())
-                if clean and clean not in creators_to_scan:
-                    creators_to_scan.append(clean)
+            self._logger.info(
+                "[RETRIEVAL] platform=instagram hashtag_targets=%d creator_keywords=%s",
+                len(ig_hashtags), creator_keywords[:4],
+            )
+        except Exception as exc:
+            self._logger.warning("QueryIntelligence unavailable: %s — using basic strategy", exc)
+            creator_keywords = list(keywords)
 
-        # Deduplicate
-        creators_to_scan = list(dict.fromkeys(creators_to_scan))
+        results: List[NormalizedContent] = []
+        seen_ids: set = set()
 
-        return self.fetch_trending(
-            limit=limit,
-            creators=creators_to_scan[:10],
+        # ── Step 1: Hashtag-based retrieval ──
+        # Try fetching posts by hashtag (if API supports it)
+        for hashtag in ig_hashtags[:8]:
+            if len(results) >= limit:
+                break
+
+            posts = self._fetch_hashtag_posts(hashtag)
+            self._metrics.record_request(success=bool(posts))
+
+            for post in posts:
+                if len(results) >= limit:
+                    break
+                try:
+                    normalized = self._normalize_post(post)
+                    if normalized and normalized.id not in seen_ids:
+                        seen_ids.add(normalized.id)
+                        results.append(normalized)
+                except Exception as exc:
+                    self._logger.debug("Skip IG post: %s", exc)
+
+            self._throttle(extra_delay=0.5)
+
+        hashtag_count = len(results)
+        self._logger.info(
+            "[RETRIEVAL] platform=instagram source=hashtag results=%d",
+            hashtag_count,
         )
+
+        # ── Step 2: Creator profile scanning (fallback / supplemental) ──
+        if len(results) < limit:
+            # Find matching niche creators for the keywords
+            creators_to_scan: List[str] = []
+
+            # Match against niche categories
+            kw_lower = [kw.lower() for kw in (creator_keywords or keywords)]
+            for niche, creators in _DEFAULT_CREATORS.items():
+                if any(niche in kw or kw in niche for kw in kw_lower):
+                    creators_to_scan.extend(creators)
+
+            # If no niche match, try general + keyword-as-username
+            if not creators_to_scan:
+                creators_to_scan.extend(_DEFAULT_CREATORS.get("general", []))
+                for kw in keywords:
+                    clean = re.sub(r"[^a-zA-Z0-9._]", "", kw.lower())
+                    if clean and clean not in creators_to_scan:
+                        creators_to_scan.append(clean)
+
+            # Deduplicate
+            creators_to_scan = list(dict.fromkeys(creators_to_scan))[:10]
+
+            for username in creators_to_scan:
+                if len(results) >= limit:
+                    break
+
+                self._logger.info("Instagram: scanning @%s", username)
+                posts = self._fetch_user_posts(username)
+                self._metrics.record_request(success=bool(posts))
+
+                for post in posts[:5]:  # Limit per creator
+                    if len(results) >= limit:
+                        break
+                    try:
+                        normalized = self._normalize_post(post, username)
+                        if normalized and normalized.id not in seen_ids:
+                            seen_ids.add(normalized.id)
+                            results.append(normalized)
+                    except Exception as exc:
+                        self._logger.debug("Skip IG post: %s", exc)
+
+                self._throttle(extra_delay=0.5)
+
+        creator_count = len(results) - hashtag_count
+        self._logger.info(
+            "[RETRIEVAL] platform=instagram source=creator_scan results=%d",
+            creator_count,
+        )
+
+        # ── Step 3: Local relevance scoring ──
+        if query_context and results:
+            try:
+                from analytics.relevance_engine import ContentRelevanceEngine
+                relevance = ContentRelevanceEngine()
+                scored_results: List[NormalizedContent] = []
+
+                for item in results:
+                    # Score using the raw dict representation
+                    content_dict = item.to_raw_video()
+                    result = relevance.score(content_dict, query_context)
+
+                    if result.passed:
+                        scored_results.append(item)
+                    else:
+                        self._logger.debug(
+                            "[FILTERED] ig_post=%s reason=%r score=%d",
+                            item.id, result.match_reason, result.score,
+                        )
+
+                pre_filter = len(results)
+                results = scored_results
+                self._logger.info(
+                    "[RELEVANCE] platform=instagram scored=%d passed=%d rejected=%d",
+                    pre_filter, len(results), pre_filter - len(results),
+                )
+            except Exception as exc:
+                self._logger.warning(
+                    "Relevance scoring unavailable: %s — returning unfiltered results", exc
+                )
+
+        self._logger.info(
+            "Instagram: fetched %d relevant posts for keywords %s",
+            len(results), keywords,
+        )
+        return results
+
+    def _fetch_hashtag_posts(
+        self, hashtag: str
+    ) -> List[Dict[str, Any]]:
+        """
+        Attempt to fetch Instagram posts by hashtag.
+
+        Tries the instagram120 hashtag endpoint with graceful fallback.
+        If the API doesn't support hashtag search, returns empty list.
+        """
+        client = self._get_client()
+        try:
+            # Try hashtag endpoint (may not be available on all API tiers)
+            resp = client.post(
+                f"{_RAPIDAPI_BASE_URL}/hashtag",
+                json={"hashtag": hashtag},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, dict):
+                    result = data.get("result", data)
+                    if isinstance(result, dict):
+                        edges = result.get("edges", [])
+                        if edges and isinstance(edges, list):
+                            posts = []
+                            for edge in edges:
+                                node = edge.get("node", edge) if isinstance(edge, dict) else edge
+                                if isinstance(node, dict):
+                                    posts.append(node)
+                            if posts:
+                                self._logger.info(
+                                    "Instagram: hashtag '#%s' returned %d posts",
+                                    hashtag, len(posts),
+                                )
+                                return posts
+                    # Try flat format
+                    items = (
+                        data.get("items", [])
+                        or data.get("posts", [])
+                        or data.get("data", [])
+                        or []
+                    )
+                    if items:
+                        return items
+
+            elif resp.status_code == 429:
+                self._logger.warning("Instagram rate limit hit for hashtag '#%s'", hashtag)
+                self._metrics.record_rate_limit()
+            else:
+                self._logger.debug(
+                    "Instagram hashtag endpoint returned %d for '#%s' — endpoint may not be available",
+                    resp.status_code, hashtag,
+                )
+        except Exception as exc:
+            self._logger.debug(
+                "Instagram hashtag fetch failed for '#%s': %s", hashtag, exc
+            )
+
+        return []
 
     def fetch_by_hashtags(
         self,
@@ -290,10 +469,10 @@ class InstagramConnector(BaseConnector):
         """
         Fetch Instagram posts by hashtag.
 
-        Since hashtag API requires auth, we map hashtags to relevant
-        creator profiles and fetch their recent posts instead.
+        Uses intelligent expansion and the hashtag endpoint where available,
+        falling back to keyword-based search.
         """
-        # Map hashtags to keywords and use keyword search
+        # Map hashtags to keywords and use the intelligent keyword search
         keywords = [tag.lstrip("#").strip() for tag in hashtags if tag.strip()]
         return self.fetch_by_keywords(keywords, limit=limit)
 

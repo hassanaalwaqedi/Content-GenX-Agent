@@ -13,6 +13,7 @@ COPY .env.example .env.example
 # Copy connector and analytics packages
 COPY connectors/ ./connectors/
 COPY analytics/ ./analytics/
+COPY services/ ./services/
 
 # Create data directory
 RUN mkdir -p /app/data

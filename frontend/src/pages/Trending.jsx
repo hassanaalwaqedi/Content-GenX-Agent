@@ -5,7 +5,8 @@ import { api } from '../api/client';
 import { exportToPDF } from '../api/export';
 import ContentGeneratorModal from '../components/ContentGeneratorModal';
 import { useDataset } from '../context/DatasetContext';
-import { getPlatformIcon, getPlatformLabel, fmt, ALL_PLATFORMS } from '../utils/platform';
+import { getPlatformLabel, fmt, ALL_PLATFORMS, getPlatformIcon } from '../utils/platform';
+import PlatformIcon from '../components/PlatformIcon';
 // fmt is now imported from utils/platform
 
 const DEFAULT_THUMBNAIL = 'https://via.placeholder.com/320x180.png?text=No+Thumbnail';
@@ -172,8 +173,8 @@ export default function Trending() {
                 <tr key={v.video_id}>
                   <td className="number-cell">{i + 1}</td>
                   <td>
-                    <span title={getPlatformLabel(v.platform)} style={{ fontSize: '1.1rem' }}>
-                      {getPlatformIcon(v.platform)}
+                    <span title={getPlatformLabel(v.platform)}>
+                      <PlatformIcon platform={v.platform} size={18} />
                     </span>
                   </td>
                   <td>

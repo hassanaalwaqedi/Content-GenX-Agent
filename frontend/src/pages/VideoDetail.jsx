@@ -2,7 +2,8 @@ import { useEffect, useState, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { api } from '../api/client';
 import { exportTranscriptPDF } from '../api/export';
-import { getPlatformIcon, getPlatformLabel, getPlatformColor } from '../utils/platform';
+import { getPlatformLabel, getPlatformColor } from '../utils/platform';
+import PlatformIcon from '../components/PlatformIcon';
 
 /** Build a source URL for any supported platform */
 function getSourceUrl(video) {
@@ -122,7 +123,7 @@ export default function VideoDetail() {
             color: getPlatformColor(video.platform),
             border: `1px solid ${getPlatformColor(video.platform)}44`,
           }}>
-            {getPlatformIcon(video.platform)} {getPlatformLabel(video.platform)}
+            <PlatformIcon platform={video.platform} size={14} /> {getPlatformLabel(video.platform)}
           </span>
           <span className="badge badge-purple" style={{ marginLeft: '0.5rem' }}>{video.niche}</span>
           {video.channel && <span style={{ marginLeft: '0.75rem', color: '#8b90a0' }}>by {video.channel}</span>}
@@ -390,7 +391,7 @@ export default function VideoDetail() {
               <td style={{ fontWeight: 600 }}>Platform</td>
               <td>
                 <span style={{ color: getPlatformColor(video.platform) }}>
-                  {getPlatformIcon(video.platform)} {getPlatformLabel(video.platform)}
+                  <PlatformIcon platform={video.platform} size={14} /> {getPlatformLabel(video.platform)}
                 </span>
               </td>
             </tr>

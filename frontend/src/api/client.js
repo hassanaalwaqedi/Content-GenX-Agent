@@ -29,16 +29,18 @@ async function request(endpoint, options = {}) {
   const token = getToken();
   const headers = {
     'Content-Type': 'application/json',
-    ...options.headers,
+    ...(options.headers || {}),
   };
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
   }
 
+  const { headers: _h, ...restOptions } = options;
+
   const res = await fetch(url, {
     headers,
     credentials: 'include',
-    ...options,
+    ...restOptions,
   });
 
   if (!res.ok) {

@@ -4,7 +4,8 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pi
 import { api } from '../api/client';
 import { useDataset } from '../context/DatasetContext';
 import EmptyDataset from '../components/EmptyDataset';
-import { getPlatformIcon, getPlatformLabel, fmt } from '../utils/platform';
+import { getPlatformLabel, fmt } from '../utils/platform';
+import PlatformIcon from '../components/PlatformIcon';
 const COLORS = ['#4f8cff', '#34d399', '#f59e0b', '#a78bfa', '#ef4444', '#06b6d4', '#f472b6', '#22d3ee'];
 
 // fmt is now imported from utils/platform
@@ -257,7 +258,7 @@ export default function Dashboard() {
               <div className="kpi-sub">
                 {stats?.platform_stats ? Object.entries(stats.platform_stats).map(([platform, count], i) => (
                   <span key={platform}>
-                    {i > 0 ? ' · ' : ''}{getPlatformIcon(platform)} {count}
+                    {i > 0 ? ' · ' : ''}<PlatformIcon platform={platform} size={12} /> {count}
                   </span>
                 )) : ''}
               </div>

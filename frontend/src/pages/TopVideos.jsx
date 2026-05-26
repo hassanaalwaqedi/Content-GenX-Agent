@@ -8,6 +8,7 @@ import ContentGeneratorModal from '../components/ContentGeneratorModal';
 import SkeletonCard from '../components/SkeletonCard';
 import { useDataset } from '../context/DatasetContext';
 import { getPlatformIcon, getPlatformLabel, fmt, ALL_PLATFORMS } from '../utils/platform';
+import PlatformIcon from '../components/PlatformIcon';
 // fmt is now imported from utils/platform
 
 function debounce(fn, ms) {

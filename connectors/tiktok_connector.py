@@ -289,20 +289,117 @@ class TikTokConnector(BaseConnector):
         limit: int = 25,
         **kwargs: Any,
     ) -> List[NormalizedContent]:
-        """Search TikTok by keywords."""
+        """
+        Search TikTok by keywords using intelligent multi-source retrieval.
+
+        Priority Order:
+            1. keyword search (via /feed/search) — highest relevance
+            2. hashtag search (via /challenge/posts) — good relevance
+            3. trending fallback — ONLY if steps 1+2 return zero results
+
+        Uses QueryIntelligenceEngine to expand keywords into platform-
+        optimized search variants for maximum coverage.
+        """
         effective_limit = min(limit, self._max_results)
         results: List[NormalizedContent] = []
         seen_ids: set = set()
+
+        # ── Step 0: Expand keywords via Query Intelligence ──
+        try:
+            from services.query_intelligence import QueryIntelligenceEngine
+            qi = QueryIntelligenceEngine()
+        except Exception as exc:
+            self._logger.warning("QueryIntelligence unavailable: %s — using raw keywords", exc)
+            qi = None
 
         for kw in keywords:
             if len(results) >= effective_limit:
                 break
 
-            self._logger.info("TikTok: searching for '%s'", kw)
-            raw_videos = self._search_videos(kw, count=effective_limit)
-            self._metrics.record_request(success=bool(raw_videos))
+            # Expand keyword into variants
+            if qi:
+                ctx = qi.expand(kw)
+                search_terms = [kw] + [t for t in ctx.normalized_terms if t != kw]
+                hashtag_terms = [
+                    v.lstrip("#") for v in ctx.tiktok_variants
+                    if v.replace(" ", "") != kw  # avoid duplicating the keyword search
+                ]
+            else:
+                search_terms = [kw]
+                hashtag_terms = [kw.replace(" ", "")]
 
-            for raw in raw_videos:
+            self._logger.info(
+                "[RETRIEVAL] platform=tiktok keyword=%r search_terms=%s hashtag_terms=%d",
+                kw, search_terms[:4], len(hashtag_terms),
+            )
+
+            # ── Priority 1: Keyword search ──
+            for term in search_terms[:4]:  # Cap to avoid excessive API calls
+                if len(results) >= effective_limit:
+                    break
+
+                self._logger.info("TikTok: keyword search '%s'", term)
+                raw_videos = self._search_videos(term, count=effective_limit)
+                self._metrics.record_request(success=bool(raw_videos))
+
+                for raw in raw_videos:
+                    if len(results) >= effective_limit:
+                        break
+                    try:
+                        normalized = self.normalize_content(raw)
+                        if normalized and normalized.id not in seen_ids:
+                            seen_ids.add(normalized.id)
+                            results.append(normalized)
+                    except Exception as exc:
+                        self._logger.debug("TikTok normalize failed: %s", exc)
+
+                self._throttle()
+
+            self._logger.info(
+                "[RETRIEVAL] platform=tiktok source=keyword_search results=%d",
+                len(results),
+            )
+
+            # ── Priority 2: Hashtag search ──
+            hashtag_results_start = len(results)
+            for tag in hashtag_terms[:6]:  # Cap hashtag queries
+                if len(results) >= effective_limit:
+                    break
+
+                clean_tag = tag.lstrip("#").replace(" ", "").strip()
+                if not clean_tag or len(clean_tag) < 2:
+                    continue
+
+                self._logger.info("TikTok: hashtag search '#%s'", clean_tag)
+                raw_videos = self._fetch_hashtag_videos(clean_tag, count=min(15, effective_limit))
+                self._metrics.record_request(success=bool(raw_videos))
+
+                for raw in raw_videos:
+                    if len(results) >= effective_limit:
+                        break
+                    try:
+                        normalized = self.normalize_content(raw)
+                        if normalized and normalized.id not in seen_ids:
+                            seen_ids.add(normalized.id)
+                            results.append(normalized)
+                    except Exception as exc:
+                        self._logger.debug("TikTok normalize failed: %s", exc)
+
+                self._throttle()
+
+            self._logger.info(
+                "[RETRIEVAL] platform=tiktok source=hashtag results=%d",
+                len(results) - hashtag_results_start,
+            )
+
+        # ── Priority 3: Trending fallback — ONLY if no results ──
+        if not results:
+            self._logger.warning(
+                "TikTok: zero results from keyword+hashtag search — falling back to trending"
+            )
+            trending = self._fetch_feed(count=min(effective_limit, 15))
+            self._metrics.record_request(success=bool(trending))
+            for raw in trending:
                 if len(results) >= effective_limit:
                     break
                 try:
@@ -313,10 +410,13 @@ class TikTokConnector(BaseConnector):
                 except Exception as exc:
                     self._logger.debug("TikTok normalize failed: %s", exc)
 
-            self._throttle()
+            self._logger.info(
+                "[RETRIEVAL] platform=tiktok source=trending_fallback results=%d",
+                len(results),
+            )
 
         self._logger.info(
-            "TikTok: fetched %d videos for keywords %s",
+            "TikTok: fetched %d total videos for keywords %s",
             len(results), keywords,
         )
         return results
@@ -382,13 +482,15 @@ class TikTokConnector(BaseConnector):
             or raw_payload.get("aweme_id", "")
         )
 
-        # Author info
-        author = raw_payload.get("author", {}) or {}
+        # Author info — guard against non-dict values
+        author_raw = raw_payload.get("author") or raw_payload.get("author_info") or {}
+        author = author_raw if isinstance(author_raw, dict) else {}
         author_name = (
             author.get("nickname", "")
             or author.get("uniqueId", "")
             or author.get("unique_id", "")
             or raw_payload.get("author_name", "")
+            or (str(author_raw) if isinstance(author_raw, str) else "")
         )
         author_id = (
             author.get("uniqueId", "")
@@ -402,13 +504,16 @@ class TikTokConnector(BaseConnector):
             or 0
         )
 
-        # Content
-        desc = (
-            raw_payload.get("desc", "")
-            or raw_payload.get("description", "")
-            or raw_payload.get("title", "")
-            or ""
-        )
+        # Content — handle content_desc (list) alongside desc/title
+        desc = raw_payload.get("desc", "") or raw_payload.get("description", "")
+        if not desc:
+            content_desc = raw_payload.get("content_desc")
+            if isinstance(content_desc, list):
+                desc = " ".join(str(s) for s in content_desc if s).strip()
+            elif isinstance(content_desc, str):
+                desc = content_desc
+        if not desc:
+            desc = raw_payload.get("title", "") or ""
         title = desc[:150] if desc else f"TikTok #{video_id}"
 
         # Hashtags from textExtra or description
@@ -420,16 +525,24 @@ class TikTokConnector(BaseConnector):
                 if ht:
                     hashtags.append(ht.lower())
 
-        # Fallback: extract from desc
-        if not hashtags and desc:
-            hashtags = re.findall(r"#(\w+)", desc)[:20]
+        # Fallback: extract from desc or title
+        if not hashtags:
+            hashtag_source = desc or raw_payload.get("title", "") or ""
+            if hashtag_source:
+                hashtags = re.findall(r"#(\w+)", hashtag_source)[:20]
 
-        # Audio
-        music = raw_payload.get("music", {}) or raw_payload.get("music_info", {}) or {}
-        audio_name = music.get("title", "") or music.get("name", "") or ""
+        # Audio — guard against music being a string instead of a dict
+        music_raw = raw_payload.get("music") or raw_payload.get("music_info") or {}
+        music = music_raw if isinstance(music_raw, dict) else {}
+        audio_name = (
+            music.get("title", "")
+            or music.get("name", "")
+            or (str(music_raw) if isinstance(music_raw, str) else "")
+        )
 
-        # Thumbnail
-        video_data = raw_payload.get("video", {}) or {}
+        # Thumbnail — guard against video being a non-dict
+        video_data_raw = raw_payload.get("video") or {}
+        video_data = video_data_raw if isinstance(video_data_raw, dict) else {}
         thumbnail_url = (
             video_data.get("cover", "")
             or video_data.get("originCover", "")
