@@ -119,10 +119,14 @@ class Settings(BaseSettings):
         description="Apify API token (from console.apify.com → Settings → Integrations)",
     )
 
-    # ---- TikTok Ingestion --------------------------------------------------
+    # ---- TikTok Ingestion (via Apify) ----------------------------------------
     tiktok_enabled: bool = Field(
         default=False,
-        description="Enable TikTok connector (uses RapidAPI tiktok-scraper7)",
+        description="Enable TikTok connector (uses Apify clockworks/tiktok-scraper)",
+    )
+    apify_tiktok_actor_id: str = Field(
+        default="clockworks~tiktok-scraper",
+        description="Apify Actor ID for TikTok Scraper",
     )
     tiktok_request_delay: float = Field(
         default=2.0, ge=0.5,

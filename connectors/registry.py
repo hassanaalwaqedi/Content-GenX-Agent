@@ -90,14 +90,20 @@ class ConnectorRegistry:
         except Exception as exc:
             logger.warning("Reddit connector init failed: %s", exc)
 
-        # ---- TikTok --------------------------------------------------------
+        # ---- TikTok (Apify) -------------------------------------------------
         try:
             from connectors.tiktok_connector import TikTokConnector
 
-            if getattr(settings, "tiktok_enabled", False):
+            if getattr(settings, "tiktok_enabled", False) and getattr(
+                settings, "apify_api_token", ""
+            ):
                 connector = TikTokConnector()
                 self._connectors["tiktok"] = connector
-                logger.info("✔ TikTok connector registered (RapidAPI).")
+                logger.info("✔ TikTok connector registered (Apify).")
+            elif getattr(settings, "tiktok_enabled", False):
+                logger.info(
+                    "⊘ TikTok connector skipped (APIFY_API_TOKEN not set)."
+                )
             else:
                 logger.info("⊘ TikTok connector skipped (disabled).")
         except Exception as exc:
