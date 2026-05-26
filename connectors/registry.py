@@ -103,20 +103,22 @@ class ConnectorRegistry:
         except Exception as exc:
             logger.warning("TikTok connector init failed: %s", exc)
 
-        # ---- Instagram -----------------------------------------------------
+        # ---- Instagram (Apify) ----------------------------------------------
         try:
             from connectors.instagram_connector import InstagramConnector
 
-            if getattr(settings, "instagram_enabled", False):
+            if getattr(settings, "instagram_enabled", False) and getattr(
+                settings, "apify_api_token", ""
+            ):
                 connector = InstagramConnector()
                 self._connectors["instagram"] = connector
-                logger.info("✔ Instagram connector registered.")
+                logger.info("✔ Instagram connector registered (Apify).")
+            elif getattr(settings, "instagram_enabled", False):
+                logger.info(
+                    "⊘ Instagram connector skipped (APIFY_API_TOKEN not set)."
+                )
             else:
                 logger.info("⊘ Instagram connector skipped (disabled).")
-        except ImportError:
-            logger.info(
-                "⊘ Instagram connector skipped (instaloader not installed)."
-            )
         except Exception as exc:
             logger.warning("Instagram connector init failed: %s", exc)
 

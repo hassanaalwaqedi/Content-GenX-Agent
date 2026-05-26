@@ -113,6 +113,12 @@ class Settings(BaseSettings):
         description="Max Reddit posts to fetch per niche keyword",
     )
 
+    # ---- Apify Platform (shared across connectors using Apify) ---------------
+    apify_api_token: str = Field(
+        default="",
+        description="Apify API token (from console.apify.com → Settings → Integrations)",
+    )
+
     # ---- TikTok Ingestion --------------------------------------------------
     tiktok_enabled: bool = Field(
         default=False,
@@ -135,14 +141,18 @@ class Settings(BaseSettings):
         description="Max TikTok scans per day (0 = unlimited). Prevents rate limiting.",
     )
 
-    # ---- Instagram Ingestion -----------------------------------------------
+    # ---- Instagram Ingestion (via Apify) ------------------------------------
     instagram_enabled: bool = Field(
         default=False,
-        description="Enable Instagram connector (requires RapidAPI key)",
+        description="Enable Instagram connector (uses Apify Instagram Scraper)",
+    )
+    apify_instagram_actor_id: str = Field(
+        default="shu8hvrXbJbY3Eb9W",
+        description="Apify Actor ID for Instagram Scraper",
     )
     rapidapi_key: str = Field(
         default="",
-        description="RapidAPI key for Instagram (instagram120) API",
+        description="RapidAPI key (used by TikTok connector)",
     )
     instagram_request_delay: float = Field(
         default=3.0, ge=1.0,
@@ -150,7 +160,7 @@ class Settings(BaseSettings):
     )
     instagram_max_results: int = Field(
         default=30, ge=1, le=100,
-        description="Max Instagram posts to fetch per creator",
+        description="Max Instagram posts to fetch per query",
     )
     instagram_daily_scan_limit: int = Field(
         default=5, ge=0,

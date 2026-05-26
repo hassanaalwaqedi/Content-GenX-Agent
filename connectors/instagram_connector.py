@@ -1,20 +1,25 @@
 """
 Instagram Connector for the Content Intelligence Platform.
 
-Uses the RapidAPI "Instagram" (instagram120) API to fetch public
-Instagram content from creator profiles.
+Uses the Apify Instagram Scraper to fetch public Instagram content.
+This replaces the previous RapidAPI-based connector with a more
+reliable, cost-effective solution (~$1/1000 results, $5 free/month).
 
 Strategy:
-    Instead of hashtag search (which Instagram has locked down), we use
-    profile-based discovery — fetching recent posts from curated
-    influencer/creator accounts per niche. This is more reliable and
-    produces higher-quality intelligence data.
+    - Profile-based discovery: fetch recent posts from curated creators
+    - Hashtag search: fetch posts by hashtag
+    - Keyword search: intelligent expansion via QueryIntelligence
+
+Apify Flow:
+    1. POST /v2/acts/{actorId}/run-sync-get-dataset-items  (sync, ≤300s)
+    2. If timeout → async: POST /runs → poll → GET /datasets/{id}/items
 
 Dependencies:
     pip install httpx  (already in requirements)
 
 Environment:
-    RAPIDAPI_KEY=<your-key>
+    APIFY_API_TOKEN=<your-token>
+    APIFY_INSTAGRAM_ACTOR_ID=shu8hvrXbJbY3Eb9W  (default)
     INSTAGRAM_ENABLED=true
 """
 
@@ -33,9 +38,8 @@ from connectors.models import ConnectorHealth, NormalizedContent
 
 logger = logging.getLogger(__name__)
 
-# ── RapidAPI config ──────────────────────────────────────────────────────────
-_RAPIDAPI_HOST = "instagram120.p.rapidapi.com"
-_RAPIDAPI_BASE_URL = f"https://{_RAPIDAPI_HOST}/api/instagram"
+# ── Apify API config ─────────────────────────────────────────────────────────
+_APIFY_BASE_URL = "https://api.apify.com/v2"
 
 # ── Default creator accounts to scan when no specific ones are provided ──
 # Organized by niche — high-engagement public accounts
@@ -74,10 +78,10 @@ _ALL_DEFAULT_CREATORS = list(
 
 class InstagramConnector(BaseConnector):
     """
-    Instagram connector using RapidAPI (instagram120).
+    Instagram connector using Apify Instagram Scraper.
 
-    Fetches posts from public creator profiles — no login required.
-    Free tier refreshes monthly (~100-500 requests).
+    Fetches posts from public profiles, hashtags, and search queries.
+    Free tier includes $5/month credits (~3,000-5,000 posts).
     """
 
     platform_id = "instagram"
@@ -89,102 +93,187 @@ class InstagramConnector(BaseConnector):
         settings = get_settings()
         super().__init__(
             request_delay=getattr(settings, "instagram_request_delay", 3.0),
-            request_timeout=30,
+            request_timeout=60,  # Apify runs can take longer
             max_retries=2,
         )
         self._max_results = getattr(settings, "instagram_max_results", 30)
-        self._api_key = getattr(settings, "rapidapi_key", "")
+        self._api_token = getattr(settings, "apify_api_token", "")
+        self._actor_id = getattr(settings, "apify_instagram_actor_id", "shu8hvrXbJbY3Eb9W")
         self._client: Optional[httpx.Client] = None
 
     def _get_client(self) -> httpx.Client:
         """Lazily initialize the HTTP client."""
         if self._client is None or self._client.is_closed:
             self._client = httpx.Client(
-                timeout=self._request_timeout,
+                timeout=httpx.Timeout(
+                    connect=15.0,
+                    read=310.0,  # Apify sync endpoint waits up to 300s
+                    write=15.0,
+                    pool=15.0,
+                ),
                 headers={
                     "Content-Type": "application/json",
-                    "x-rapidapi-host": _RAPIDAPI_HOST,
-                    "x-rapidapi-key": self._api_key,
                 },
             )
         return self._client
 
-    def _fetch_user_posts(
-        self, username: str, max_id: str = ""
+    # ── Apify API methods ────────────────────────────────────────────────────
+
+    def _run_actor_sync(
+        self,
+        actor_input: Dict[str, Any],
+        *,
+        timeout_secs: int = 120,
+        memory_mb: int = 256,
     ) -> List[Dict[str, Any]]:
         """
-        Fetch posts from a specific Instagram user profile.
+        Run the Instagram Scraper actor synchronously.
 
-        The instagram120 API returns:
-            { result: { edges: [ { node: { ...post } }, ... ] } }
+        Uses the run-sync-get-dataset-items endpoint which starts the
+        actor, waits for completion, and returns dataset items directly.
+        Max wait time is 300 seconds.
+
+        Args:
+            actor_input: The actor's input configuration.
+            timeout_secs: Max wait time for the sync run.
+            memory_mb: Memory allocation for the actor run.
+
+        Returns:
+            List of result dicts from the actor's dataset.
         """
         client = self._get_client()
+        url = f"{_APIFY_BASE_URL}/acts/{self._actor_id}/run-sync-get-dataset-items"
+
         try:
             resp = client.post(
-                f"{_RAPIDAPI_BASE_URL}/posts",
-                json={"username": username, "maxid": max_id},
+                url,
+                params={
+                    "token": self._api_token,
+                    "timeout": timeout_secs,
+                    "memory": memory_mb,
+                    "format": "json",
+                },
+                json=actor_input,
             )
+
+            if resp.status_code == 408:
+                # Timeout — the run is still going, fall back to async
+                self._logger.warning(
+                    "Apify sync run timed out after %ds — trying async fallback",
+                    timeout_secs,
+                )
+                return self._run_actor_async(actor_input, memory_mb=memory_mb)
+
             resp.raise_for_status()
             data = resp.json()
 
-            if not isinstance(data, dict):
-                return data if isinstance(data, list) else []
-
-            # Primary format: result.edges[].node
-            result = data.get("result", data)
-            if isinstance(result, dict):
-                edges = result.get("edges", [])
-                if edges and isinstance(edges, list):
-                    posts = []
-                    for edge in edges:
-                        node = edge.get("node", edge) if isinstance(edge, dict) else edge
-                        if isinstance(node, dict):
-                            posts.append(node)
-                    if posts:
-                        return posts
-
-            # Fallback: try flat list formats
-            return (
-                data.get("items", [])
-                or data.get("posts", [])
-                or data.get("data", [])
-                or []
-            )
+            if isinstance(data, list):
+                return data
+            elif isinstance(data, dict):
+                # Sometimes wrapped in a container
+                return data.get("items", [data])
+            return []
 
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 429:
-                self._logger.warning(
-                    "Instagram RapidAPI rate limit hit for @%s", username
-                )
-                self._metrics.record_rate_limit()
-            else:
-                self._logger.warning(
-                    "Instagram API error for @%s: %s %s",
-                    username, exc.response.status_code, exc.response.text[:200],
-                )
-            self._metrics.record_request(success=False)
-            return []
-
-        except Exception as exc:
             self._logger.warning(
-                "Instagram API request failed for @%s: %s", username, exc
+                "Apify API error: %s %s",
+                exc.response.status_code,
+                exc.response.text[:300],
             )
             self._metrics.record_request(success=False)
             return []
 
-    def _fetch_user_profile(self, username: str) -> Dict[str, Any]:
-        """Fetch profile metadata for a user."""
+        except Exception as exc:
+            self._logger.warning("Apify request failed: %s", exc)
+            self._metrics.record_request(success=False)
+            return []
+
+    def _run_actor_async(
+        self,
+        actor_input: Dict[str, Any],
+        *,
+        memory_mb: int = 256,
+        max_wait_secs: int = 180,
+        poll_interval: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """
+        Run the actor asynchronously with polling.
+
+        Fallback for when sync endpoint times out.
+
+        Steps:
+            1. Start the run via POST /acts/{id}/runs
+            2. Poll GET /actor-runs/{runId} until status is terminal
+            3. Fetch items from GET /datasets/{datasetId}/items
+        """
         client = self._get_client()
+
+        # Step 1: Start the run
         try:
             resp = client.post(
-                f"{_RAPIDAPI_BASE_URL}/profile",
-                json={"username": username},
+                f"{_APIFY_BASE_URL}/acts/{self._actor_id}/runs",
+                params={"token": self._api_token, "memory": memory_mb},
+                json=actor_input,
             )
             resp.raise_for_status()
-            return resp.json() or {}
+            run_data = resp.json().get("data", {})
+            run_id = run_data.get("id")
+            if not run_id:
+                self._logger.error("Apify async run: no run ID returned")
+                return []
         except Exception as exc:
-            self._logger.debug("Profile fetch failed for @%s: %s", username, exc)
-            return {}
+            self._logger.error("Apify async run start failed: %s", exc)
+            return []
+
+        # Step 2: Poll for completion
+        terminal_statuses = {"SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT"}
+        start_time = time.time()
+
+        while time.time() - start_time < max_wait_secs:
+            try:
+                status_resp = client.get(
+                    f"{_APIFY_BASE_URL}/actor-runs/{run_id}",
+                    params={"token": self._api_token},
+                )
+                status_resp.raise_for_status()
+                run_info = status_resp.json().get("data", {})
+                status = run_info.get("status", "")
+
+                if status in terminal_statuses:
+                    if status != "SUCCEEDED":
+                        self._logger.warning(
+                            "Apify async run ended with status: %s", status
+                        )
+                        return []
+                    break
+
+            except Exception as exc:
+                self._logger.warning("Apify status poll failed: %s", exc)
+
+            time.sleep(poll_interval)
+        else:
+            self._logger.warning(
+                "Apify async run did not complete within %ds", max_wait_secs
+            )
+            return []
+
+        # Step 3: Fetch dataset items
+        dataset_id = run_info.get("defaultDatasetId", "")
+        if not dataset_id:
+            self._logger.error("Apify async run: no dataset ID")
+            return []
+
+        try:
+            items_resp = client.get(
+                f"{_APIFY_BASE_URL}/datasets/{dataset_id}/items",
+                params={"token": self._api_token, "format": "json"},
+            )
+            items_resp.raise_for_status()
+            data = items_resp.json()
+            return data if isinstance(data, list) else []
+        except Exception as exc:
+            self._logger.error("Apify dataset fetch failed: %s", exc)
+            return []
 
     # ── BaseConnector implementation ─────────────────────────────────────────
 
@@ -198,38 +287,43 @@ class InstagramConnector(BaseConnector):
         """
         Fetch trending Instagram content by scanning popular creator profiles.
 
-        Since Instagram has no public trending API, we aggregate recent
-        posts from curated high-engagement accounts.
+        Runs the Apify actor with directUrls pointing to popular
+        creator profile pages.
         """
-        # Use a subset of default creators to stay within rate limits
-        creators = kwargs.get("creators", _ALL_DEFAULT_CREATORS[:8])
-        per_creator = max(limit // len(creators), 2) if creators else 5
+        # Use a subset of default creators to stay within budget
+        creators = kwargs.get("creators", _ALL_DEFAULT_CREATORS[:6])
+        urls = [f"https://www.instagram.com/{username}/" for username in creators]
+
+        actor_input = {
+            "directUrls": urls,
+            "resultsType": "posts",
+            "resultsLimit": max(limit // len(creators), 3),
+            "searchType": "user",
+            "searchLimit": 1,
+        }
+
+        self._logger.info(
+            "Instagram (Apify): scanning %d creator profiles", len(creators)
+        )
+        raw_items = self._run_actor_sync(actor_input)
+        self._metrics.record_request(success=bool(raw_items))
 
         results: List[NormalizedContent] = []
         seen_ids: set = set()
 
-        for username in creators:
+        for item in raw_items:
             if len(results) >= limit:
                 break
-
-            self._logger.info("Instagram: scanning @%s", username)
-            posts = self._fetch_user_posts(username)
-            self._metrics.record_request(success=bool(posts))
-
-            for post in posts[:per_creator]:
-                try:
-                    normalized = self._normalize_post(post, username)
-                    if normalized and normalized.id not in seen_ids:
-                        seen_ids.add(normalized.id)
-                        results.append(normalized)
-                except Exception as exc:
-                    self._logger.debug("Skip IG post: %s", exc)
-
-            # Throttle between creators
-            self._throttle(extra_delay=0.5)
+            try:
+                normalized = self._normalize_apify_post(item)
+                if normalized and normalized.id not in seen_ids:
+                    seen_ids.add(normalized.id)
+                    results.append(normalized)
+            except Exception as exc:
+                self._logger.debug("Skip IG post: %s", exc)
 
         self._logger.info(
-            "Instagram: fetched %d posts from %d creators",
+            "Instagram (Apify): fetched %d posts from %d creators",
             len(results), len(creators),
         )
         return results
@@ -248,12 +342,12 @@ class InstagramConnector(BaseConnector):
         Strategy:
             1. Expand keywords via QueryIntelligenceEngine into Instagram
                hashtag clusters and niche-specific search terms
-            2. Try hashtag-based retrieval for each generated hashtag
-            3. Fall back to keyword-matched creator profiles
+            2. Build Apify actor input with hashtag URLs
+            3. Run actor and collect results
             4. Score every fetched post locally and reject irrelevant content
         """
         self._logger.info(
-            "Instagram: intelligent keyword search for: %s", keywords,
+            "Instagram (Apify): intelligent keyword search for: %s", keywords,
         )
 
         # ── Step 0: Expand keywords via Query Intelligence ──
@@ -267,7 +361,7 @@ class InstagramConnector(BaseConnector):
             contexts = qi.expand_multi(keywords)
             if contexts:
                 query_context = qi.merge_contexts(contexts) if len(contexts) > 1 else contexts[0]
-                # Extract hashtag targets (strip # prefix for API)
+                # Extract hashtag targets (strip # prefix for URLs)
                 ig_hashtags = [
                     v.lstrip("#") for v in query_context.instagram_variants
                     if v.startswith("#")
@@ -283,85 +377,66 @@ class InstagramConnector(BaseConnector):
             self._logger.warning("QueryIntelligence unavailable: %s — using basic strategy", exc)
             creator_keywords = list(keywords)
 
+        # ── Step 1: Build Apify actor input ──
+        # Combine hashtag URLs and creator profile URLs
+        urls: List[str] = []
+
+        # Add hashtag URLs
+        for hashtag in ig_hashtags[:8]:
+            clean = hashtag.strip().replace(" ", "")
+            if clean:
+                urls.append(f"https://www.instagram.com/explore/tags/{clean}/")
+
+        # If no hashtags from QI, generate from raw keywords
+        if not urls:
+            for kw in keywords:
+                clean = re.sub(r"[^a-zA-Z0-9]", "", kw.lower())
+                if clean:
+                    urls.append(f"https://www.instagram.com/explore/tags/{clean}/")
+
+        # Add niche-matched creator profiles
+        kw_lower = [kw.lower() for kw in (creator_keywords or keywords)]
+        creators_to_scan: List[str] = []
+        for niche, creators in _DEFAULT_CREATORS.items():
+            if any(niche in kw or kw in niche for kw in kw_lower):
+                creators_to_scan.extend(creators)
+        if not creators_to_scan:
+            creators_to_scan.extend(_DEFAULT_CREATORS.get("general", [])[:3])
+
+        for username in list(dict.fromkeys(creators_to_scan))[:5]:
+            urls.append(f"https://www.instagram.com/{username}/")
+
+        # Deduplicate
+        urls = list(dict.fromkeys(urls))
+
+        actor_input = {
+            "directUrls": urls,
+            "resultsType": "posts",
+            "resultsLimit": max(limit // max(len(urls), 1), 3),
+            "searchType": "hashtag",
+            "searchLimit": 1,
+        }
+
+        self._logger.info(
+            "Instagram (Apify): running actor with %d URLs", len(urls)
+        )
+        raw_items = self._run_actor_sync(actor_input)
+        self._metrics.record_request(success=bool(raw_items))
+
+        # ── Step 2: Normalize results ──
         results: List[NormalizedContent] = []
         seen_ids: set = set()
 
-        # ── Step 1: Hashtag-based retrieval ──
-        # Try fetching posts by hashtag (if API supports it)
-        for hashtag in ig_hashtags[:8]:
+        for item in raw_items:
             if len(results) >= limit:
                 break
-
-            posts = self._fetch_hashtag_posts(hashtag)
-            self._metrics.record_request(success=bool(posts))
-
-            for post in posts:
-                if len(results) >= limit:
-                    break
-                try:
-                    normalized = self._normalize_post(post)
-                    if normalized and normalized.id not in seen_ids:
-                        seen_ids.add(normalized.id)
-                        results.append(normalized)
-                except Exception as exc:
-                    self._logger.debug("Skip IG post: %s", exc)
-
-            self._throttle(extra_delay=0.5)
-
-        hashtag_count = len(results)
-        self._logger.info(
-            "[RETRIEVAL] platform=instagram source=hashtag results=%d",
-            hashtag_count,
-        )
-
-        # ── Step 2: Creator profile scanning (fallback / supplemental) ──
-        if len(results) < limit:
-            # Find matching niche creators for the keywords
-            creators_to_scan: List[str] = []
-
-            # Match against niche categories
-            kw_lower = [kw.lower() for kw in (creator_keywords or keywords)]
-            for niche, creators in _DEFAULT_CREATORS.items():
-                if any(niche in kw or kw in niche for kw in kw_lower):
-                    creators_to_scan.extend(creators)
-
-            # If no niche match, try general + keyword-as-username
-            if not creators_to_scan:
-                creators_to_scan.extend(_DEFAULT_CREATORS.get("general", []))
-                for kw in keywords:
-                    clean = re.sub(r"[^a-zA-Z0-9._]", "", kw.lower())
-                    if clean and clean not in creators_to_scan:
-                        creators_to_scan.append(clean)
-
-            # Deduplicate
-            creators_to_scan = list(dict.fromkeys(creators_to_scan))[:10]
-
-            for username in creators_to_scan:
-                if len(results) >= limit:
-                    break
-
-                self._logger.info("Instagram: scanning @%s", username)
-                posts = self._fetch_user_posts(username)
-                self._metrics.record_request(success=bool(posts))
-
-                for post in posts[:5]:  # Limit per creator
-                    if len(results) >= limit:
-                        break
-                    try:
-                        normalized = self._normalize_post(post, username)
-                        if normalized and normalized.id not in seen_ids:
-                            seen_ids.add(normalized.id)
-                            results.append(normalized)
-                    except Exception as exc:
-                        self._logger.debug("Skip IG post: %s", exc)
-
-                self._throttle(extra_delay=0.5)
-
-        creator_count = len(results) - hashtag_count
-        self._logger.info(
-            "[RETRIEVAL] platform=instagram source=creator_scan results=%d",
-            creator_count,
-        )
+            try:
+                normalized = self._normalize_apify_post(item)
+                if normalized and normalized.id not in seen_ids:
+                    seen_ids.add(normalized.id)
+                    results.append(normalized)
+            except Exception as exc:
+                self._logger.debug("Skip IG post: %s", exc)
 
         # ── Step 3: Local relevance scoring ──
         if query_context and results:
@@ -371,7 +446,6 @@ class InstagramConnector(BaseConnector):
                 scored_results: List[NormalizedContent] = []
 
                 for item in results:
-                    # Score using the raw dict representation
                     content_dict = item.to_raw_video()
                     result = relevance.score(content_dict, query_context)
 
@@ -395,69 +469,10 @@ class InstagramConnector(BaseConnector):
                 )
 
         self._logger.info(
-            "Instagram: fetched %d relevant posts for keywords %s",
+            "Instagram (Apify): fetched %d relevant posts for keywords %s",
             len(results), keywords,
         )
         return results
-
-    def _fetch_hashtag_posts(
-        self, hashtag: str
-    ) -> List[Dict[str, Any]]:
-        """
-        Attempt to fetch Instagram posts by hashtag.
-
-        Tries the instagram120 hashtag endpoint with graceful fallback.
-        If the API doesn't support hashtag search, returns empty list.
-        """
-        client = self._get_client()
-        try:
-            # Try hashtag endpoint (may not be available on all API tiers)
-            resp = client.post(
-                f"{_RAPIDAPI_BASE_URL}/hashtag",
-                json={"hashtag": hashtag},
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                if isinstance(data, dict):
-                    result = data.get("result", data)
-                    if isinstance(result, dict):
-                        edges = result.get("edges", [])
-                        if edges and isinstance(edges, list):
-                            posts = []
-                            for edge in edges:
-                                node = edge.get("node", edge) if isinstance(edge, dict) else edge
-                                if isinstance(node, dict):
-                                    posts.append(node)
-                            if posts:
-                                self._logger.info(
-                                    "Instagram: hashtag '#%s' returned %d posts",
-                                    hashtag, len(posts),
-                                )
-                                return posts
-                    # Try flat format
-                    items = (
-                        data.get("items", [])
-                        or data.get("posts", [])
-                        or data.get("data", [])
-                        or []
-                    )
-                    if items:
-                        return items
-
-            elif resp.status_code == 429:
-                self._logger.warning("Instagram rate limit hit for hashtag '#%s'", hashtag)
-                self._metrics.record_rate_limit()
-            else:
-                self._logger.debug(
-                    "Instagram hashtag endpoint returned %d for '#%s' — endpoint may not be available",
-                    resp.status_code, hashtag,
-                )
-        except Exception as exc:
-            self._logger.debug(
-                "Instagram hashtag fetch failed for '#%s': %s", hashtag, exc
-            )
-
-        return []
 
     def fetch_by_hashtags(
         self,
@@ -467,28 +482,65 @@ class InstagramConnector(BaseConnector):
         **kwargs: Any,
     ) -> List[NormalizedContent]:
         """
-        Fetch Instagram posts by hashtag.
+        Fetch Instagram posts by hashtag using Apify.
 
-        Uses intelligent expansion and the hashtag endpoint where available,
-        falling back to keyword-based search.
+        Builds hashtag explore URLs and runs the actor.
         """
-        # Map hashtags to keywords and use the intelligent keyword search
-        keywords = [tag.lstrip("#").strip() for tag in hashtags if tag.strip()]
-        return self.fetch_by_keywords(keywords, limit=limit)
+        urls = []
+        for tag in hashtags:
+            clean = tag.lstrip("#").strip().replace(" ", "")
+            if clean:
+                urls.append(f"https://www.instagram.com/explore/tags/{clean}/")
+
+        if not urls:
+            return []
+
+        actor_input = {
+            "directUrls": urls,
+            "resultsType": "posts",
+            "resultsLimit": max(limit // len(urls), 3),
+            "searchType": "hashtag",
+            "searchLimit": 1,
+        }
+
+        self._logger.info(
+            "Instagram (Apify): fetching %d hashtags", len(urls)
+        )
+        raw_items = self._run_actor_sync(actor_input)
+        self._metrics.record_request(success=bool(raw_items))
+
+        results: List[NormalizedContent] = []
+        seen_ids: set = set()
+
+        for item in raw_items:
+            if len(results) >= limit:
+                break
+            try:
+                normalized = self._normalize_apify_post(item)
+                if normalized and normalized.id not in seen_ids:
+                    seen_ids.add(normalized.id)
+                    results.append(normalized)
+            except Exception as exc:
+                self._logger.debug("Skip IG post: %s", exc)
+
+        self._logger.info(
+            "Instagram (Apify): fetched %d posts for hashtags %s",
+            len(results), hashtags,
+        )
+        return results
 
     def normalize_content(
         self, raw_payload: Dict[str, Any]
     ) -> NormalizedContent:
         """
-        Transform a raw API post dict into NormalizedContent.
+        Transform a raw Apify post dict into NormalizedContent.
 
         Required by BaseConnector abstract contract.
         """
-        result = self._normalize_post(raw_payload)
+        result = self._normalize_apify_post(raw_payload)
         if result is None:
-            # Fallback: return a minimal NormalizedContent
             return NormalizedContent(
-                id=f"ig_{raw_payload.get('pk', 'unknown')}",
+                id=f"ig_{raw_payload.get('shortCode', 'unknown')}",
                 platform="instagram",
                 content_type="post",
                 author_name="",
@@ -509,69 +561,85 @@ class InstagramConnector(BaseConnector):
             )
         return result
 
-    def _normalize_post(
-        self, raw: Dict[str, Any], fallback_username: str = ""
+    def _normalize_apify_post(
+        self, raw: Dict[str, Any],
     ) -> Optional[NormalizedContent]:
         """
-        Transform a raw API post dict into NormalizedContent.
+        Transform a raw Apify Instagram Scraper result into NormalizedContent.
 
-        Handles multiple response formats from the instagram120 API.
+        Apify Instagram Scraper returns fields like:
+            shortCode, ownerUsername, ownerFullName, caption, likesCount,
+            commentsCount, videoViewCount, timestamp, displayUrl, type, url, etc.
         """
         if not raw or not isinstance(raw, dict):
             return None
 
         # ── Extract post ID ──
-        post_id = str(
-            raw.get("pk", "")
-            or raw.get("id", "")
-            or raw.get("code", "")
+        shortcode = str(
+            raw.get("shortCode", "")
             or raw.get("shortcode", "")
+            or raw.get("code", "")
+            or raw.get("id", "")
         )
-        if not post_id:
+        if not shortcode:
             return None
 
-        shortcode = raw.get("code", "") or raw.get("shortcode", post_id)
-
         # ── Caption / Title ──
-        caption_obj = raw.get("caption", {})
-        if isinstance(caption_obj, dict):
-            caption_text = caption_obj.get("text", "") or ""
-        elif isinstance(caption_obj, str):
-            caption_text = caption_obj
-        else:
-            caption_text = ""
+        caption_text = raw.get("caption", "") or ""
+        if isinstance(caption_text, dict):
+            # Some formats nest caption as an object
+            caption_text = caption_text.get("text", "") or ""
 
         title_lines = caption_text.split("\n")
-        title = title_lines[0][:150] if title_lines[0] else f"IG Post {shortcode}"
+        title = title_lines[0][:150] if title_lines and title_lines[0] else f"IG Post {shortcode}"
 
         # ── Author ──
-        user_obj = raw.get("user", {}) or raw.get("owner", {}) or {}
         author = (
-            user_obj.get("username", "")
-            or user_obj.get("full_name", "")
-            or fallback_username
+            raw.get("ownerUsername", "")
+            or raw.get("owner_username", "")
+            or raw.get("username", "")
+            or ""
         )
-        author_followers = int(user_obj.get("follower_count", 0) or 0)
+        author_full_name = raw.get("ownerFullName", "") or raw.get("full_name", "") or ""
+        if not author and author_full_name:
+            author = author_full_name
+
+        # Follower count (may not always be present in post-level data)
+        author_followers = int(
+            raw.get("ownerFollowerCount", 0)
+            or raw.get("follower_count", 0)
+            or 0
+        )
 
         # ── Content type ──
-        media_type = raw.get("media_type", 0)
-        video_duration = raw.get("video_duration", 0) or 0
-        is_video = media_type == 2 or raw.get("is_video", False)
+        media_type = raw.get("type", "") or raw.get("mediaType", "") or ""
+        if isinstance(media_type, str):
+            media_type_lower = media_type.lower()
+        else:
+            media_type_lower = ""
+
+        is_video = raw.get("isVideo", False) or media_type_lower in ("video", "reel")
+        video_duration = raw.get("videoDuration", 0) or raw.get("video_duration", 0) or 0
 
         if is_video:
             content_type = "reel" if 0 < video_duration <= 90 else "video"
+        elif media_type_lower == "sidecar":
+            content_type = "carousel"
+        elif media_type_lower == "image":
+            content_type = "post"
         else:
-            content_type = "post" if media_type == 1 else "carousel" if media_type == 8 else "post"
+            content_type = "post"
 
         # ── Metrics ──
-        likes = int(raw.get("like_count", 0) or raw.get("likes", 0) or 0)
+        likes = int(raw.get("likesCount", 0) or raw.get("likes", 0) or 0)
         comments = int(
-            raw.get("comment_count", 0) or raw.get("comments", 0) or 0
+            raw.get("commentsCount", 0) or raw.get("comments", 0) or 0
         )
         views = int(
-            raw.get("play_count", 0)
-            or raw.get("view_count", 0)
+            raw.get("videoViewCount", 0)
+            or raw.get("videoPlayCount", 0)
             or raw.get("video_view_count", 0)
+            or raw.get("views", 0)
             or 0
         )
 
@@ -580,29 +648,45 @@ class InstagramConnector(BaseConnector):
             views = likes * 10
 
         # ── Hashtags ──
-        hashtags = re.findall(r"#(\w+)", caption_text)[:20]
+        # Apify may return hashtags as a list, or we extract from caption
+        hashtags = raw.get("hashtags", [])
+        if not hashtags and isinstance(hashtags, list):
+            hashtags = re.findall(r"#(\w+)", caption_text)[:20]
+        elif isinstance(hashtags, list):
+            hashtags = [h.lstrip("#") for h in hashtags][:20]
+        else:
+            hashtags = re.findall(r"#(\w+)", caption_text)[:20]
 
         # ── Published date ──
-        taken_at = raw.get("taken_at", 0) or raw.get("taken_at_timestamp", 0)
-        if taken_at:
-            try:
-                published_at = datetime.fromtimestamp(
-                    int(taken_at), tz=timezone.utc
-                ).isoformat()
-            except (ValueError, OSError):
-                published_at = ""
-        else:
-            published_at = ""
+        timestamp = raw.get("timestamp", "") or raw.get("taken_at", "")
+        published_at = ""
+        if timestamp:
+            if isinstance(timestamp, str):
+                # ISO format from Apify
+                published_at = timestamp
+            elif isinstance(timestamp, (int, float)):
+                try:
+                    published_at = datetime.fromtimestamp(
+                        int(timestamp), tz=timezone.utc
+                    ).isoformat()
+                except (ValueError, OSError):
+                    pass
 
         # ── Thumbnail ──
-        thumbnail_url = ""
-        image_versions = raw.get("image_versions2", {})
-        if isinstance(image_versions, dict):
-            candidates = image_versions.get("candidates", [])
-            if candidates and isinstance(candidates, list):
-                thumbnail_url = candidates[0].get("url", "")
-        if not thumbnail_url:
-            thumbnail_url = raw.get("thumbnail_url", "") or raw.get("display_url", "")
+        thumbnail_url = (
+            raw.get("displayUrl", "")
+            or raw.get("thumbnailUrl", "")
+            or raw.get("display_url", "")
+            or raw.get("thumbnail_url", "")
+            or ""
+        )
+
+        # ── Source URL ──
+        source_url = (
+            raw.get("url", "")
+            or raw.get("postUrl", "")
+            or f"https://www.instagram.com/p/{shortcode}/"
+        )
 
         # ── Hook text ──
         hook_text = ""
@@ -627,33 +711,36 @@ class InstagramConnector(BaseConnector):
             shares=0,
             saves=0,
             hook_text=hook_text,
-            source_url=f"https://www.instagram.com/p/{shortcode}/",
+            source_url=source_url,
             raw_payload=raw,
         )
 
     def health_check(self) -> ConnectorHealth:
-        """Check Instagram connector health via a quick API ping."""
+        """Check Instagram connector health by verifying Apify token and actor access."""
         start = time.time()
 
-        if not self._api_key:
+        if not self._api_token:
             return ConnectorHealth(
                 platform="instagram",
                 status="unavailable",
                 latency_ms=0,
                 last_check=datetime.now(timezone.utc).isoformat(),
-                error_message="RAPIDAPI_KEY not configured in .env",
+                error_message="APIFY_API_TOKEN not configured in .env",
                 credentials_configured=False,
             )
 
         try:
             client = self._get_client()
-            resp = client.post(
-                f"{_RAPIDAPI_BASE_URL}/profile",
-                json={"username": "instagram"},
+            # Check that the actor exists and is accessible
+            resp = client.get(
+                f"{_APIFY_BASE_URL}/acts/{self._actor_id}",
+                params={"token": self._api_token},
             )
             latency = (time.time() - start) * 1000
 
             if resp.status_code == 200:
+                actor_info = resp.json().get("data", {})
+                actor_name = actor_info.get("name", "unknown")
                 return ConnectorHealth(
                     platform="instagram",
                     status="healthy",
@@ -662,13 +749,13 @@ class InstagramConnector(BaseConnector):
                     error_message="",
                     credentials_configured=True,
                 )
-            elif resp.status_code == 429:
+            elif resp.status_code == 401:
                 return ConnectorHealth(
                     platform="instagram",
-                    status="degraded",
+                    status="unavailable",
                     latency_ms=round(latency, 1),
                     last_check=datetime.now(timezone.utc).isoformat(),
-                    error_message="Rate limit — free tier quota may be exhausted",
+                    error_message="Invalid APIFY_API_TOKEN — check your token",
                     credentials_configured=True,
                 )
             else:
@@ -677,7 +764,7 @@ class InstagramConnector(BaseConnector):
                     status="degraded",
                     latency_ms=round(latency, 1),
                     last_check=datetime.now(timezone.utc).isoformat(),
-                    error_message=f"HTTP {resp.status_code}",
+                    error_message=f"Apify API returned HTTP {resp.status_code}",
                     credentials_configured=True,
                 )
 
@@ -688,5 +775,5 @@ class InstagramConnector(BaseConnector):
                 latency_ms=round((time.time() - start) * 1000, 1),
                 last_check=datetime.now(timezone.utc).isoformat(),
                 error_message=str(exc)[:200],
-                credentials_configured=bool(self._api_key),
+                credentials_configured=bool(self._api_token),
             )
