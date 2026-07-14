@@ -1,0 +1,60 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: deploy/Dockerfile
+    ports:
+      - "127.0.0.1:8000:80"
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - .env
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  scheduler:
+    build:
+      context: ./backend
+      dockerfile: deploy/Dockerfile
+    command: python -m pipeline.scheduler
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - .env
+    restart: always
+    depends_on:
+      - backend
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        - VITE_API_URL=/api
+    ports:
+      - "127.0.0.1:3000:80"
+    depends_on:
+      - backend
+    environment:
+      - VITE_API_URL=/api
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --url http://frontend:80
+    depends_on:
+      - frontend
+    restart: unless-stopped
