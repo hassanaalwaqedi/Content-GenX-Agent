@@ -1,3 +1,5 @@
+import { useEffect, useState } from 'react';
+
 function ConfidenceGauge({ label, value, maxLabel, icon }) {
   const pct = Math.min(Math.max(value, 0), 100);
   const color = pct >= 75 ? 'var(--color-accent-green)' : pct >= 40 ? 'var(--color-accent-orange)' : 'var(--color-accent-red)';
@@ -18,7 +20,19 @@ function ConfidenceGauge({ label, value, maxLabel, icon }) {
   );
 }
 
-export default function IntelligenceConfidence({ lastRun, connectorData, stats }) {
+export default function IntelligenceConfidence({ lastRun, connectorData }) {
+  const [currentTime, setCurrentTime] = useState(0);
+
+  useEffect(() => {
+    const updateTime = () => setCurrentTime(Date.now());
+    const timer = window.setTimeout(updateTime, 0);
+    const interval = window.setInterval(updateTime, 60_000);
+    return () => {
+      window.clearTimeout(timer);
+      window.clearInterval(interval);
+    };
+  }, []);
+
   const ingested = lastRun?.videos_ingested || 0;
   const enriched = lastRun?.videos_enriched || 0;
   const stored = lastRun?.videos_stored || 0;
@@ -30,8 +44,8 @@ export default function IntelligenceConfidence({ lastRun, connectorData, stats }
   const available = connectorData?.available || [];
   const platformDiversity = Math.round((available.length / 4) * 100);
   let freshness = 0;
-  if (lastRun?.started_at) {
-    const h = (Date.now() - new Date(lastRun.started_at).getTime()) / 3600000;
+  if (lastRun?.started_at && currentTime) {
+    const h = (currentTime - new Date(lastRun.started_at).getTime()) / 3600000;
     freshness = h < 1 ? 100 : h < 6 ? 80 : h < 24 ? 60 : h < 72 ? 35 : 10;
   }
   const gauges = [

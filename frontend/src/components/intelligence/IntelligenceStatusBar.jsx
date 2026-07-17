@@ -7,6 +7,7 @@ export default function IntelligenceStatusBar() {
   const [connectorData, setConnectorData] = useState(null);
   const [lastRun, setLastRun] = useState(null);
   const [stats, setStats] = useState(null);
+  const [currentTime, setCurrentTime] = useState(0);
 
   const loadStatus = useCallback(() => {
     Promise.all([
@@ -25,6 +26,16 @@ export default function IntelligenceStatusBar() {
 
   useEffect(() => { loadStatus(); }, [loadStatus]);
 
+  useEffect(() => {
+    const updateTime = () => setCurrentTime(Date.now());
+    const timer = window.setTimeout(updateTime, 0);
+    const interval = window.setInterval(updateTime, 60_000);
+    return () => {
+      window.clearTimeout(timer);
+      window.clearInterval(interval);
+    };
+  }, []);
+
   const connectors = connectorData?.connectors || {};
   const available = connectorData?.available || [];
   const healthyCount = Object.values(connectors).filter(c => c.status === 'healthy').length;
@@ -38,7 +49,8 @@ export default function IntelligenceStatusBar() {
 
   const timeSince = (dateStr) => {
     if (!dateStr) return '—';
-    const diff = Date.now() - new Date(dateStr).getTime();
+    if (!currentTime) return 'â€”';
+    const diff = currentTime - new Date(dateStr).getTime();
     const mins = Math.floor(diff / 60000);
     if (mins < 60) return `${mins}m ago`;
     const hours = Math.floor(mins / 60);

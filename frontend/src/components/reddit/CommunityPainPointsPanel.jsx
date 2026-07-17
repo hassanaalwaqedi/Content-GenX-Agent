@@ -1,0 +1,6 @@
+import { compactNumber, formatScore, sentimentMeta, subredditLabel } from './redditData';
+import { RedditEmptyState, RedditSkeleton } from './RedditStates';
+
+export default function CommunityPainPointsPanel({ items, loading, onOpen, onScan }) {
+  return <section className="reddit-panel reddit-pain-points"><header><h2>⚠ Community Pain Points</h2><button type="button" onClick={() => onOpen?.(items[0])} disabled={!items.length}>View all</button></header>{loading ? <RedditSkeleton rows={4} /> : !items.length ? <RedditEmptyState title="Pain-point enrichment is not available yet" detail="Reddit scans with AI enrichment identify recurring, evidence-based user problems." actionLabel="Run Reddit Scan" onAction={onScan} /> : <div className="reddit-pain-list">{items.map((item) => { const sentiment = sentimentMeta(item.sentiment); return <button type="button" key={item.statement} onClick={() => onOpen(item)}><div><strong>{item.statement}</strong><small>{compactNumber(item.mentions)} mentions · {item.subreddits?.slice(0, 2).map(subredditLabel).join(', ') || 'Community unavailable'}</small></div><span style={{ '--sentiment': sentiment.color }}>{sentiment.label}</span><b>{formatScore(item.opportunity_score)}</b></button>; })}</div>}</section>;
+}

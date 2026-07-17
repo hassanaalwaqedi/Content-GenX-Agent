@@ -13,6 +13,7 @@ const API_PREFIXES = [
   '/pipeline',
   '/trends',
   '/opportunities',
+  '/platforms',
   '/ai',
   '/docs',
   '/redoc',
@@ -23,8 +24,18 @@ const API_PREFIXES = [
 const proxy = {};
 for (const prefix of API_PREFIXES) {
   proxy[prefix] = {
-    target: 'http://localhost:8000',
+    target: 'http://127.0.0.1:8000',
     changeOrigin: true,
+    ...(['/pipeline', '/videos', '/creators', '/platforms'].includes(prefix) ? {
+      bypass(req) {
+        const pathname = req.url?.split('?')[0];
+        const isDirectSpaRoute = pathname === prefix || pathname === `${prefix}/`
+          || (prefix === '/platforms' && (pathname === '/platforms/reddit' || pathname === '/platforms/reddit/'));
+        if (req.method === 'GET' && isDirectSpaRoute) {
+          return '/index.html';
+        }
+      },
+    } : {}),
   };
 }
 
