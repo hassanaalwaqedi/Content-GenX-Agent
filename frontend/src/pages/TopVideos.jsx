@@ -1,26 +1,22 @@
-import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { exportToPDF } from '../api/export';
-import VideoCard from '../components/VideoCard';
+import ContentCommandBar from '../components/top-content/ContentCommandBar';
+import ContentDiscoveryGrid from '../components/top-content/ContentDiscoveryGrid';
+import FeaturedContentCard from '../components/top-content/FeaturedContentCard';
+import IntelligenceRail from '../components/top-content/IntelligenceRail';
+import TopContentHeader from '../components/top-content/TopContentHeader';
 import TranscriptModal from '../components/TranscriptModal';
 import ContentGeneratorModal from '../components/ContentGeneratorModal';
-import SkeletonCard from '../components/SkeletonCard';
 import { useDataset } from '../context/DatasetContext';
-import { getPlatformIcon, getPlatformLabel, fmt, ALL_PLATFORMS } from '../utils/platform';
-import PlatformIcon from '../components/PlatformIcon';
-// fmt is now imported from utils/platform
+import { fmt, getPlatformLabel } from '../utils/platform';
+import './TopVideos.css';
 
-function debounce(fn, ms) {
-  let timer;
-  return (...args) => {
-    clearTimeout(timer);
-    timer = setTimeout(() => fn(...args), ms);
-  };
-}
+const DEFAULT_GLOBAL_FILTERS = { region: '', category: '', content_type: '' };
 
 export default function TopVideos() {
-  const { datasetId } = useDataset();
+  const { datasetId, activeDataset } = useDataset();
   const [searchParams, setSearchParams] = useSearchParams();
   const trendFilter = searchParams.get('trend') || '';
   const [niches, setNiches] = useState([]);
@@ -28,405 +24,182 @@ export default function TopVideos() {
   const [days, setDays] = useState(365);
   const [videos, setVideos] = useState([]);
   const [loading, setLoading] = useState(true);
-
-  // Filters
+  const [requestError, setRequestError] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [minScore, setMinScore] = useState(0);
-
-  // Local filters (region/category within dataset)
-  const [globalFilters, setGlobalFilters] = useState({ region: '', category: '', content_type: '' });
   const [platformFilter, setPlatformFilter] = useState('');
-
-  // Transcript modal
+  const [sortMode, setSortMode] = useState('score');
+  const [viewMode, setViewMode] = useState('grid');
   const [transcriptVideo, setTranscriptVideo] = useState(null);
   const [transcriptData, setTranscriptData] = useState(null);
   const [transcriptLoading, setTranscriptLoading] = useState(false);
   const [transcriptError, setTranscriptError] = useState(null);
-
-  // Content generator modal
   const [generateVideo, setGenerateVideo] = useState(null);
 
-  // Debounced search
-  const debouncedSetSearch = useCallback(
-    debounce((val) => setDebouncedSearch(val), 300),
-    []
-  );
-
-  const handleSearchChange = (e) => {
-    setSearchTerm(e.target.value);
-    debouncedSetSearch(e.target.value);
-  };
-
-  // Load niches
   useEffect(() => {
-    api.getHealth().then((h) => {
-      setNiches(h.niches || []);
-    });
+    const timeout = window.setTimeout(() => setDebouncedSearch(searchTerm), 250);
+    return () => window.clearTimeout(timeout);
+  }, [searchTerm]);
+
+  const loadNiches = useCallback(async () => {
+    try {
+      const health = await api.getHealth();
+      setNiches(health.niches || []);
+    } catch (error) {
+      console.error('Unable to load content categories:', error);
+    }
   }, []);
 
-  // Load videos (scoped to active dataset)
-  useEffect(() => {
+  const loadVideos = useCallback(async () => {
     setLoading(true);
-    api
-      .getTopVideos(selectedNiche || null, days, 50, globalFilters, datasetId)
-      .then((data) => setVideos(data.videos || []))
-      .catch((err) => console.error(err))
-      .finally(() => setLoading(false));
-  }, [selectedNiche, days, globalFilters, datasetId]);
+    setRequestError('');
+    try {
+      const data = trendFilter
+        ? await api.getTrendVideos(trendFilter, days, 500, { platform: platformFilter }, datasetId)
+        : await api.getTopVideos(selectedNiche || null, days, 50, { ...DEFAULT_GLOBAL_FILTERS, platform: platformFilter }, datasetId);
+      setVideos(data.videos || []);
+    } catch (error) {
+      console.error('Unable to load top content:', error);
+      setRequestError(error.message || 'Unable to load content right now.');
+      setVideos([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [datasetId, days, platformFilter, selectedNiche, trendFilter]);
 
-  // Clear trend filter
+  useEffect(() => {
+    loadNiches();
+  }, [loadNiches]);
+
+  useEffect(() => {
+    loadVideos();
+  }, [loadVideos]);
+
   const clearTrendFilter = useCallback(() => {
-    setSearchParams((prev) => {
-      prev.delete('trend');
-      return prev;
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.delete('trend');
+      return next;
     });
   }, [setSearchParams]);
 
-  // Filtered videos
+  const resetFilters = useCallback(() => {
+    setSearchTerm('');
+    setDebouncedSearch('');
+    setSelectedNiche('');
+    setPlatformFilter('');
+    setMinScore(0);
+    clearTrendFilter();
+  }, [clearTrendFilter]);
+
   const filteredVideos = useMemo(() => {
-    let result = videos;
-
-    // Filter by platform
-    if (platformFilter) {
-      result = result.filter(v => v.platform === platformFilter);
-    }
-
-    // Filter by trend topic (from Dashboard click-through)
-    if (trendFilter) {
-      const tf = trendFilter.toLowerCase();
-      result = result.filter(v => {
-        const topics = (v.topics || '').toLowerCase();
-        const title = (v.title || '').toLowerCase();
-        const niche = (v.niche || '').toLowerCase();
-        const desc = (v.description || '').toLowerCase();
-        return topics.includes(tf) || title.includes(tf) || niche.includes(tf) || desc.includes(tf);
-      });
-    }
-
+    let result = [...videos];
+    if (platformFilter) result = result.filter((video) => video.platform === platformFilter);
     if (debouncedSearch.trim()) {
-      const q = debouncedSearch.toLowerCase();
-      result = result.filter(v =>
-        (v.title || '').toLowerCase().includes(q) ||
-        (v.channel || '').toLowerCase().includes(q)
-      );
+      const query = debouncedSearch.toLowerCase();
+      result = result.filter((video) => [video.title, video.channel, video.niche, video.topics].some((value) => String(value || '').toLowerCase().includes(query)));
     }
-    if (minScore > 0) {
-      result = result.filter(v => (v.score || 0) >= minScore);
-    }
-    return result;
-  }, [videos, debouncedSearch, minScore, trendFilter, platformFilter]);
+    if (minScore > 0) result = result.filter((video) => Number(video.score || 0) >= minScore);
 
-  // Sidebar data
-  const sidebarData = useMemo(() => {
-    if (videos.length === 0) return null;
+    const sorters = {
+      score: (a, b) => Number(b.score || 0) - Number(a.score || 0),
+      views: (a, b) => Number(b.views || 0) - Number(a.views || 0),
+      engagement: (a, b) => Number(b.engagement_rate || 0) - Number(a.engagement_rate || 0),
+      recent: (a, b) => new Date(b.published_at || 0) - new Date(a.published_at || 0),
+    };
+    return result.sort(sorters[sortMode]);
+  }, [videos, debouncedSearch, minScore, platformFilter, sortMode]);
 
-    // Trending keywords from titles
-    const wordFreq = {};
-    videos.forEach(v => {
-      (v.title || '').replace(/[^\w\s]/g, '').split(/\s+/).filter(w => w.length > 4).forEach(w => {
-        const lw = w.toLowerCase();
-        wordFreq[lw] = (wordFreq[lw] || 0) + 1;
+  const railData = useMemo(() => {
+    const count = filteredVideos.length;
+    const platformCounts = filteredVideos.reduce((counts, video) => {
+      const platform = video.platform || 'unknown';
+      counts[platform] = (counts[platform] || 0) + 1;
+      return counts;
+    }, {});
+    const wordFrequency = {};
+    filteredVideos.forEach((video) => {
+      `${video.title || ''} ${video.niche || ''}`.replace(/[^\w\s]/g, '').split(/\s+/).filter((word) => word.length > 3).forEach((word) => {
+        const key = word.toLowerCase();
+        wordFrequency[key] = (wordFrequency[key] || 0) + 1;
       });
     });
-    const trendingKeywords = Object.entries(wordFreq)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 8)
-      .map(([word, count]) => ({ word, count }));
+    return {
+      count,
+      totalViews: filteredVideos.reduce((sum, video) => sum + Number(video.views || 0), 0),
+      avgEngagement: count ? filteredVideos.reduce((sum, video) => sum + Number(video.engagement_rate || 0), 0) / count : 0,
+      avgScore: count ? filteredVideos.reduce((sum, video) => sum + Number(video.score || 0), 0) / count : 0,
+      withInsights: filteredVideos.filter((video) => video.strategic_advice && video.strategic_advice !== 'Analysis pending').length,
+      withGaps: filteredVideos.filter((video) => video.content_gap && video.content_gap !== 'Analysis pending').length,
+      platformCounts,
+      trendingKeywords: Object.entries(wordFrequency).sort(([, a], [, b]) => b - a).slice(0, 6).map(([word, countValue]) => ({ word, count: countValue })),
+    };
+  }, [filteredVideos]);
 
-    // Content gaps
-    const gaps = videos
-      .filter(v => v.content_gap && v.content_gap !== 'Analysis pending')
-      .slice(0, 4)
-      .map(v => v.content_gap);
+  const handleExport = useCallback(() => {
+    exportToPDF(
+      `top_content_${selectedNiche.replace(/\s+/g, '_') || 'all'}_${days}_days.pdf`,
+      'Top Content Report',
+      `${selectedNiche || 'All categories'} — Last ${days} days`,
+      ['#', 'Platform', 'Title', 'Creator', 'Views', 'Engagement', 'Score'],
+      filteredVideos.map((video, index) => [
+        index + 1,
+        getPlatformLabel(video.platform),
+        `${video.title || 'Untitled'}`.slice(0, 56),
+        video.channel || '—',
+        fmt(video.views),
+        `${(Number(video.engagement_rate || 0) * 100).toFixed(1)}%`,
+        Number(video.score || 0).toFixed(2),
+      ]),
+    );
+  }, [days, filteredVideos, selectedNiche]);
 
-    // Top audiences
-    const audiences = videos
-      .filter(v => v.target_audience && v.target_audience !== 'Analysis pending')
-      .slice(0, 3)
-      .map(v => v.target_audience);
-
-    // Avg score
-    const avgScore = videos.reduce((s, v) => s + (v.score || 0), 0) / videos.length;
-    const avgEng = videos.reduce((s, v) => s + (v.engagement_rate || 0), 0) / videos.length;
-    const totalViews = videos.reduce((s, v) => s + (v.views || 0), 0);
-
-    return { trendingKeywords, gaps, audiences, avgScore, avgEng, totalViews };
-  }, [videos]);
-
-  // Transcript handlers
   const handleTranscript = async (video) => {
     setTranscriptVideo(video);
     setTranscriptLoading(true);
     setTranscriptError(null);
     setTranscriptData(null);
     try {
-      const data = await api.fetchTranscript(video.video_id);
-      setTranscriptData(data);
-    } catch (err) {
-      setTranscriptError(err.message || 'Failed to load transcript');
+      setTranscriptData(await api.fetchTranscript(video.video_id));
+    } catch (error) {
+      setTranscriptError(error.message || 'Failed to load transcript');
     } finally {
       setTranscriptLoading(false);
     }
   };
 
-  const closeModal = () => {
+  const closeTranscript = () => {
     setTranscriptData(null);
     setTranscriptError(null);
     setTranscriptVideo(null);
   };
 
+  const featuredVideo = filteredVideos[0];
+  const discoveryVideos = filteredVideos.slice(1);
+
   return (
-    <>
-      {/* Page Header */}
-      <div className="page-header">
-        <h2>Content Intelligence</h2>
-        <p>Discover high-performing content with AI-powered insights</p>
+    <div className="tc-page-shell">
+      <TopContentHeader activeDataset={activeDataset} count={filteredVideos.length} onRefresh={() => { loadNiches(); loadVideos(); }} onExport={handleExport} loading={loading} />
+      <ContentCommandBar
+        searchTerm={searchTerm} onSearchChange={setSearchTerm} selectedNiche={selectedNiche} onNicheChange={setSelectedNiche}
+        niches={niches} days={days} onDaysChange={setDays} platformFilter={platformFilter} onPlatformChange={setPlatformFilter}
+        minScore={minScore} onMinScoreChange={setMinScore} viewMode={viewMode} onViewModeChange={setViewMode}
+        sortMode={sortMode} onSortModeChange={setSortMode} trendFilter={trendFilter} onClearTrend={clearTrendFilter} onReset={resetFilters}
+      />
+      {requestError && <div className="tc-error-banner">⚠ {requestError} <button onClick={loadVideos}>Try again</button></div>}
+      <div className="tc-content-layout">
+        <main className="tc-content-main">
+          {featuredVideo && !loading && <FeaturedContentCard video={featuredVideo} onGenerate={setGenerateVideo} onTranscript={handleTranscript} />}
+          <section className="tc-discovery-section">
+            <div className="tc-discovery-heading"><div><h2>Top performing content</h2><span>{filteredVideos.length.toLocaleString()} results</span></div><p>Ranked by {sortMode === 'score' ? 'AI score' : sortMode}</p></div>
+            <ContentDiscoveryGrid videos={discoveryVideos} viewMode={viewMode} loading={loading} onGenerate={setGenerateVideo} onTranscript={handleTranscript} />
+          </section>
+        </main>
+        <IntelligenceRail data={railData} onKeywordClick={setSearchTerm} />
       </div>
-
-      {/* Trend Filter Banner */}
-      {trendFilter && (
-        <div className="dataset-meta-panel" style={{ marginBottom: '1rem' }}>
-          <div className="dataset-meta-label">
-            <span style={{ color: 'var(--color-accent-orange)' }}>🔥</span>
-            Filtering by trend
-          </div>
-          <div className="dataset-meta-tags">
-            <span className="dataset-meta-tag" style={{ background: 'var(--color-primary-bg)', borderColor: 'var(--color-primary)', color: 'var(--color-primary)', fontWeight: 700 }}>
-              {trendFilter}
-            </span>
-            <span className="dataset-meta-tag">
-              {filteredVideos.length} video{filteredVideos.length !== 1 ? 's' : ''} found
-            </span>
-          </div>
-          <button
-            onClick={clearTrendFilter}
-            style={{
-              marginLeft: 'auto', background: 'none', border: '1px solid var(--color-border)',
-              borderRadius: 'var(--radius-md)', padding: '0.3rem 0.75rem', cursor: 'pointer',
-              color: 'var(--color-text-secondary)', fontSize: 'var(--font-size-xs)', fontWeight: 600,
-              transition: 'all 0.15s ease',
-            }}
-            onMouseEnter={e => { e.target.style.borderColor = 'var(--color-accent-red)'; e.target.style.color = 'var(--color-accent-red)'; }}
-            onMouseLeave={e => { e.target.style.borderColor = 'var(--color-border)'; e.target.style.color = 'var(--color-text-secondary)'; }}
-          >
-            ✕ Clear Filter
-          </button>
-        </div>
-      )}
-
-      {/* Enhanced Filter Bar */}
-      <div className="ci-filter-bar">
-        <div className="ci-filter-row">
-          <div className="ci-search-wrap">
-            <span className="ci-search-icon">🔍</span>
-            <input
-              type="text"
-              placeholder="Search content, creators..."
-              value={searchTerm}
-              onChange={handleSearchChange}
-              className="ci-search-input"
-            />
-            {searchTerm && (
-              <button className="ci-search-clear" onClick={() => { setSearchTerm(''); setDebouncedSearch(''); }}>✕</button>
-            )}
-          </div>
-
-          <select
-            className="ci-select"
-            value={selectedNiche}
-            onChange={(e) => setSelectedNiche(e.target.value)}
-          >
-            <option value="">All Categories</option>
-            {niches.map((n) => (
-              <option key={n} value={n}>{n}</option>
-            ))}
-          </select>
-
-          <select
-            className="ci-select"
-            value={days}
-            onChange={(e) => setDays(+e.target.value)}
-          >
-            <option value={7}>7 days</option>
-            <option value={30}>30 days</option>
-            <option value={90}>90 days</option>
-            <option value={180}>180 days</option>
-            <option value={365}>365 days</option>
-          </select>
-
-          <select
-            className="ci-select"
-            value={platformFilter}
-            onChange={(e) => setPlatformFilter(e.target.value)}
-          >
-            <option value="">All Platforms</option>
-            {ALL_PLATFORMS.map(p => (
-              <option key={p} value={p}>{getPlatformIcon(p)} {getPlatformLabel(p)}</option>
-            ))}
-          </select>
-
-          <div className="ci-score-filter">
-            <label className="ci-score-label">
-              Min Score: <strong>{minScore.toFixed(1)}</strong>
-            </label>
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.05"
-              value={minScore}
-              onChange={(e) => setMinScore(+e.target.value)}
-              className="ci-score-slider"
-            />
-          </div>
-        </div>
-
-        <div className="ci-filter-meta">
-          <span className="badge badge-blue">{filteredVideos.length} content items</span>
-          {debouncedSearch && <span className="badge badge-purple">Filtered</span>}
-          {minScore > 0 && <span className="badge badge-orange">Score ≥ {minScore.toFixed(1)}</span>}
-          {videos.length > 0 && (
-            <button
-              className="btn btn-secondary ci-export-btn"
-              onClick={() => {
-                exportToPDF(
-                  `top_content_${selectedNiche.replace(/\s+/g, '_')}.pdf`,
-                  'Top Content Report',
-                  `${selectedNiche} — Last ${days} days`,
-                  ['#', 'Platform', 'Title', 'Creator', 'Views', 'Engagement', 'Score'],
-                  filteredVideos.map((v, i) => [
-                    i + 1,
-                    getPlatformLabel(v.platform),
-                    v.title?.slice(0, 50) + (v.title?.length > 50 ? '…' : ''),
-                    v.channel || '—',
-                    fmt(v.views),
-                    (v.engagement_rate * 100).toFixed(1) + '%',
-                    v.score?.toFixed(2),
-                  ])
-                );
-              }}
-            >
-              📄 Export PDF
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Main Content Area */}
-      <div className="ci-layout">
-        {/* Card Grid */}
-        <div className="ci-grid-area">
-          {loading ? (
-            <div className="ci-video-grid">
-              {Array.from({ length: 8 }).map((_, i) => (
-                <SkeletonCard key={i} />
-              ))}
-            </div>
-          ) : filteredVideos.length === 0 ? (
-            <div className="ci-empty">
-              <span style={{ fontSize: '3rem' }}>🔍</span>
-              <h3>No videos found</h3>
-              <p>Try adjusting your filters or search terms</p>
-            </div>
-          ) : (
-            <div className="ci-video-grid">
-              {filteredVideos.map((v) => (
-                <VideoCard
-                  key={v.video_id}
-                  video={v}
-                  onTranscript={handleTranscript}
-                  onGenerate={setGenerateVideo}
-                />
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Opportunity Sidebar */}
-        {sidebarData && !loading && (
-          <aside className="ci-sidebar">
-            {/* Quick Stats */}
-            <div className="ci-sidebar-card">
-              <h4 className="ci-sidebar-title">📊 Quick Stats</h4>
-              <div className="ci-sidebar-stats">
-                <div className="ci-sidebar-stat">
-                  <span className="ci-sidebar-stat-value blue">{fmt(sidebarData.totalViews)}</span>
-                  <span className="ci-sidebar-stat-label">Total Views</span>
-                </div>
-                <div className="ci-sidebar-stat">
-                  <span className="ci-sidebar-stat-value green">{(sidebarData.avgEng * 100).toFixed(1)}%</span>
-                  <span className="ci-sidebar-stat-label">Avg Engagement</span>
-                </div>
-                <div className="ci-sidebar-stat">
-                  <span className="ci-sidebar-stat-value purple">{sidebarData.avgScore.toFixed(3)}</span>
-                  <span className="ci-sidebar-stat-label">Avg Score</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Trending Keywords */}
-            <div className="ci-sidebar-card">
-              <h4 className="ci-sidebar-title">🔥 Trending Keywords</h4>
-              <div className="ci-keyword-cloud">
-                {sidebarData.trendingKeywords.map((kw, i) => (
-                  <span
-                    key={i}
-                    className="ci-keyword-tag"
-                    onClick={() => { setSearchTerm(kw.word); setDebouncedSearch(kw.word); }}
-                  >
-                    {kw.word}
-                    <span className="ci-keyword-count">{kw.count}</span>
-                  </span>
-                ))}
-              </div>
-            </div>
-
-            {/* Content Gaps */}
-            {sidebarData.gaps.length > 0 && (
-              <div className="ci-sidebar-card">
-                <h4 className="ci-sidebar-title">💡 Content Gaps</h4>
-                <ul className="ci-sidebar-list">
-                  {sidebarData.gaps.map((gap, i) => (
-                    <li key={i} className="ci-sidebar-list-item">{gap}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
-            {/* Top Audiences */}
-            {sidebarData.audiences.length > 0 && (
-              <div className="ci-sidebar-card">
-                <h4 className="ci-sidebar-title">🎯 Target Audiences</h4>
-                <ul className="ci-sidebar-list">
-                  {sidebarData.audiences.map((aud, i) => (
-                    <li key={i} className="ci-sidebar-list-item">{aud}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </aside>
-        )}
-      </div>
-
-      {/* Transcript Modal */}
-      {(transcriptLoading || transcriptError || transcriptData) && (
-        <TranscriptModal
-          video={transcriptVideo}
-          data={transcriptData}
-          loading={transcriptLoading}
-          error={transcriptError}
-          onClose={closeModal}
-        />
-      )}
-
-      {/* Content Generator Modal */}
-      {generateVideo && (
-        <ContentGeneratorModal
-          video={generateVideo}
-          onClose={() => setGenerateVideo(null)}
-        />
-      )}
-    </>
+      {(transcriptLoading || transcriptError || transcriptData) && <TranscriptModal video={transcriptVideo} data={transcriptData} loading={transcriptLoading} error={transcriptError} onClose={closeTranscript} />}
+      {generateVideo && <ContentGeneratorModal video={generateVideo} onClose={() => setGenerateVideo(null)} />}
+    </div>
   );
 }

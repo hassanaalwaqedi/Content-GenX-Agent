@@ -145,7 +145,6 @@ export function exportTranscriptPDF(video) {
   const gold  = [212, 168, 67];
   const muted = [139, 144, 160];
   const accent = [99, 102, 241]; // indigo
-  const green = [52, 211, 153];
   const white = [255, 255, 255];
 
   // ===================================================================

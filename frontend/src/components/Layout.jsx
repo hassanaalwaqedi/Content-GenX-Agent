@@ -1,6 +1,7 @@
-import { NavLink, Outlet, useLocation } from 'react-router-dom';
+import { NavLink, Outlet } from 'react-router-dom';
 import { useState, useEffect } from 'react';
 import DatasetSwitcher from './DatasetSwitcher';
+import PlatformIcon from './PlatformIcon';
 import { useAuth } from '../context/AuthContext';
 
 const navItems = [
@@ -9,6 +10,11 @@ const navItems = [
   { to: '/trending', icon: '🔥', label: 'Trending' },
   { to: '/creators', icon: '👤', label: 'Creators' },
   { to: '/pipeline', icon: '🚀', label: 'Intelligence' },
+];
+
+const platformItems = [
+  { to: '/videos', icon: '▦', label: 'All Platforms' },
+  { to: '/platforms/reddit', platform: 'reddit', label: 'Reddit Intelligence' },
 ];
 
 function getInitialTheme() {
@@ -20,18 +26,12 @@ function getInitialTheme() {
 export default function Layout() {
   const [theme, setTheme] = useState(getInitialTheme);
   const [menuOpen, setMenuOpen] = useState(false);
-  const location = useLocation();
   const { user, logout } = useAuth();
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('genx-theme', theme);
   }, [theme]);
-
-  // Close mobile menu on navigation
-  useEffect(() => {
-    setMenuOpen(false);
-  }, [location.pathname]);
 
   const toggleTheme = () => {
     setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
@@ -74,8 +74,24 @@ export default function Layout() {
               className={({ isActive }) =>
                 `nav-link${isActive ? ' active' : ''}`
               }
+              onClick={() => setMenuOpen(false)}
             >
               <span className="nav-icon">{item.icon}</span>
+              {item.label}
+            </NavLink>
+          ))}
+        </nav>
+        <nav className="sidebar-platforms" aria-label="Platform Intelligence">
+          <p>Platform Intelligence</p>
+          {platformItems.map((item) => (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              end={item.to === '/videos'}
+              className={({ isActive }) => `nav-link platform-nav-link${isActive ? ' active' : ''}`}
+              onClick={() => setMenuOpen(false)}
+            >
+              <span className="nav-icon">{item.platform ? <PlatformIcon platform={item.platform} size={17} /> : item.icon}</span>
               {item.label}
             </NavLink>
           ))}
@@ -97,9 +113,13 @@ export default function Layout() {
               Logout
             </button>
           )}
-          <div className="status-bar">
-            <span className="health-dot online"></span>
-            {user ? user.username : 'System Online'}
+          <div className="sidebar-profile">
+            <span className="health-dot online" aria-hidden="true"></span>
+            <div>
+              <strong>{user ? user.username : 'System Online'}</strong>
+              <span>{user ? 'Administrator' : 'Connected'}</span>
+            </div>
+            <span className="sidebar-profile-chevron" aria-hidden="true">⌄</span>
           </div>
         </div>
       </aside>

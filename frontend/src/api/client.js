@@ -94,16 +94,6 @@ export const authApi = {
     }).then((res) => res.json());
   },
 
-  me: () => {
-    const token = getToken();
-    const headers = {};
-    if (token) headers['Authorization'] = `Bearer ${token}`;
-
-    return fetch(`${BASE_URL}/auth/me`, {
-      headers,
-      credentials: 'include',
-    }).then((res) => res.json());
-  },
 };
 
 export const api = {
@@ -124,6 +114,7 @@ export const api = {
     if (filters.region) params.set('region', filters.region);
     if (filters.category) params.set('category', filters.category);
     if (filters.content_type) params.set('content_type', filters.content_type);
+    if (filters.platform) params.set('platform', filters.platform);
     _appendDatasetId(params, datasetId);
     return request(`/videos/top?${params.toString()}`);
   },
@@ -138,11 +129,6 @@ export const api = {
   getVideo: (id) => request(`/videos/${encodeURIComponent(id)}`),
 
   // ---- Creators ----
-  getTopCreators: (limit = 20, minVideos = 2, datasetId) => {
-    const params = new URLSearchParams({ limit, min_videos: minVideos });
-    _appendDatasetId(params, datasetId);
-    return request(`/creators/top?${params.toString()}`);
-  },
   getCreatorIntelligence: (days = 365, limit = 30, minVideos = 1, datasetId) => {
     const params = new URLSearchParams({ days, limit, min_videos: minVideos });
     _appendDatasetId(params, datasetId);
@@ -183,8 +169,6 @@ export const api = {
     }),
   listPipelineConfigs: (presetsOnly = false) =>
     request(`/pipeline/configs?presets_only=${presetsOnly}`),
-  getPipelineConfig: (id) =>
-    request(`/pipeline/config/${id}`),
   getLastUsedConfig: () =>
     request('/pipeline/config/last'),
   deletePipelineConfig: (id) =>
@@ -201,6 +185,12 @@ export const api = {
     _appendDatasetId(params, datasetId);
     return request(`/trends/discover?${params.toString()}`);
   },
+  getTrendVideos: (trend, days = 365, limit = 500, filters = {}, datasetId) => {
+    const params = new URLSearchParams({ trend, days, limit });
+    if (filters.platform) params.set('platform', filters.platform);
+    _appendDatasetId(params, datasetId);
+    return request(`/trends/videos?${params.toString()}`);
+  },
   getOpportunities: (days = 30, limit = 15, datasetId) => {
     const params = new URLSearchParams({ days, limit });
     _appendDatasetId(params, datasetId);
@@ -213,4 +203,27 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ video_id: videoId, platform, tone }),
     }),
+};
+
+function redditQuery(params = {}, datasetId) {
+  const query = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') query.set(key, String(value));
+  });
+  _appendDatasetId(query, datasetId);
+  const suffix = query.toString();
+  return suffix ? `?${suffix}` : '';
+}
+
+export const redditApi = {
+  getOverview: (days = 30, datasetId) => request(`/platforms/reddit/overview${redditQuery({ days }, datasetId)}`),
+  getTrendingSubreddits: (days = 30, limit = 8, datasetId) => request(`/platforms/reddit/subreddits/trending${redditQuery({ days, limit }, datasetId)}`),
+  getDiscussions: (filters = {}, datasetId) => request(`/platforms/reddit/discussions/emerging${redditQuery(filters, datasetId)}`),
+  getPainPoints: (days = 30, limit = 10, datasetId) => request(`/platforms/reddit/pain-points${redditQuery({ days, limit }, datasetId)}`),
+  getClusters: (days = 30, limit = 10, datasetId) => request(`/platforms/reddit/clusters${redditQuery({ days, limit }, datasetId)}`),
+  getSentiment: (days = 30, datasetId) => request(`/platforms/reddit/sentiment${redditQuery({ days }, datasetId)}`),
+  getOpportunities: (days = 30, limit = 10, datasetId) => request(`/platforms/reddit/opportunities${redditQuery({ days, limit }, datasetId)}`),
+  getContributors: (days = 30, limit = 10, datasetId) => request(`/platforms/reddit/contributors${redditQuery({ days, limit }, datasetId)}`),
+  getHealth: (datasetId) => request(`/platforms/reddit/health${redditQuery({}, datasetId)}`),
+  runScan: (config = {}) => request('/platforms/reddit/scan', { method: 'POST', body: JSON.stringify(config) }),
 };

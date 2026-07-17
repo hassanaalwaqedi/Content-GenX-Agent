@@ -71,6 +71,8 @@ export function DatasetProvider({ children }) {
   );
 }
 
+// This module intentionally exports both the provider and its consumer hook.
+// eslint-disable-next-line react-refresh/only-export-components
 export function useDataset() {
   const ctx = useContext(DatasetContext);
   if (!ctx) {

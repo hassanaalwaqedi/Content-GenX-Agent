@@ -66,7 +66,10 @@ export default function ConnectorHealthCards() {
       .finally(() => setLoading(false));
   }, []);
 
-  useEffect(() => { loadHealth(); }, [loadHealth]);
+  useEffect(() => {
+    const timer = window.setTimeout(loadHealth, 0);
+    return () => window.clearTimeout(timer);
+  }, [loadHealth]);
 
   const connectors = data?.connectors || {};
   const platforms = ['youtube', 'reddit', 'tiktok', 'instagram'];
