@@ -16,42 +16,60 @@ from __future__ import annotations
 import logging
 import sys
 from datetime import datetime, timezone
+from dataclasses import replace
 from typing import Any, Dict
 
 from core.config import get_settings
+from core.logging import configure_logging
 from core.database import (
     init_db, insert_videos, acquire_pipeline_lock, release_pipeline_lock,
-    get_pipeline_config, generate_dataset_label,
+    get_pipeline_config, generate_dataset_label, update_pipeline_run_snapshot,
 )
 from pipeline.ingestion import ingest_videos, purge_stale_youtube_videos, PipelineConfig, RawVideo
 from pipeline.processing import process_videos
 from enrichment.ai import enrich_videos
 from pipeline.transcripts import fetch_transcript
 from connectors.registry import ConnectorRegistry
+from services.query_intelligence import QueryIntelligenceEngine
 
 logger = logging.getLogger(__name__)
 
 
 def _configure_logging() -> None:
     """Set up structured logging based on config."""
+    configure_logging(get_settings())
+
+
+def _platform_keywords(pipeline_cfg: PipelineConfig | None, platform: str) -> list[str]:
+    """Expand saved keywords into a bounded platform-specific query set."""
+    if not pipeline_cfg or not pipeline_cfg.keywords:
+        return []
+
     settings = get_settings()
-    logging.basicConfig(
-        level=getattr(logging, settings.log_level, logging.INFO),
-        format=settings.log_format,
-        handlers=[logging.StreamHandler(sys.stdout)],
+    engine = QueryIntelligenceEngine(
+        max_synonyms=settings.query_max_synonyms,
+        max_hashtag_variants=settings.query_max_hashtag_variants,
     )
-    # Silence noisy third-party loggers
-    logging.getLogger("urllib3").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    context = engine.merge_contexts(engine.expand_multi(pipeline_cfg.keywords))
+    variants = getattr(context, f"{platform}_variants", None) or pipeline_cfg.keywords
+    terms = list(dict.fromkeys(term.strip() for term in variants if term and term.strip()))[:8]
+    logger.info("Query intelligence selected %d %s search term(s).", len(terms), platform)
+    return terms
 
 
-def run_pipeline(triggered_by: str = "manual", config_id: int | None = None) -> Dict[str, Any]:
+def run_pipeline(
+    triggered_by: str = "manual",
+    config_id: int | None = None,
+    pre_acquired_run_id: int | None = None,
+) -> Dict[str, Any]:
     """
     Execute the complete data pipeline.
 
     Args:
         triggered_by: Origin of the run ("manual", "api", "scheduler").
         config_id: Optional pipeline config ID for user-defined filters.
+        pre_acquired_run_id: A lock reserved by an API request before the
+            background worker is started.
 
     Returns a summary dict with counts for each stage.
     """
@@ -104,16 +122,19 @@ def run_pipeline(triggered_by: str = "manual", config_id: int | None = None) -> 
     }
 
     # Acquire database-level pipeline lock
-    run_id: int | None = None
+    run_id: int | None = pre_acquired_run_id
     try:
         # ---- Step 0: Initialize database ------------------------------------
         logger.info("Step 0/6 -- Initializing database...")
         init_db()
 
-        run_id = acquire_pipeline_lock(
-            triggered_by=triggered_by,
-            config_snapshot=config_snapshot,
-        )
+        if run_id is None:
+            run_id = acquire_pipeline_lock(
+                triggered_by=triggered_by,
+                config_snapshot=config_snapshot,
+            )
+        else:
+            update_pipeline_run_snapshot(run_id, config_snapshot)
 
         # ---- Step 1: Preflight check ----------------------------------------
         logger.info("Step 1/6 -- Preflight checks...")
@@ -143,7 +164,13 @@ def run_pipeline(triggered_by: str = "manual", config_id: int | None = None) -> 
         raw_videos = []
 
         if "youtube" in platforms:
-            yt_videos = ingest_videos(config=pipeline_cfg)
+            youtube_config = pipeline_cfg
+            if pipeline_cfg and pipeline_cfg.keywords:
+                youtube_config = replace(
+                    pipeline_cfg,
+                    keywords=_platform_keywords(pipeline_cfg, "youtube"),
+                )
+            yt_videos = ingest_videos(config=youtube_config)
             logger.info("YouTube: %d videos ingested.", len(yt_videos))
             raw_videos.extend(yt_videos)
 
@@ -156,8 +183,16 @@ def run_pipeline(triggered_by: str = "manual", config_id: int | None = None) -> 
                 try:
                     region = pipeline_cfg.regions[0] if pipeline_cfg and pipeline_cfg.regions else "US"
                     if pipeline_cfg and pipeline_cfg.keywords:
+                        # TikTok and Instagram expand the raw terms inside their
+                        # connectors. YouTube and Reddit use the shared variants
+                        # here because their clients accept plain search phrases.
+                        keywords = (
+                            _platform_keywords(pipeline_cfg, platform_id)
+                            if platform_id in {"reddit", "youtube"}
+                            else pipeline_cfg.keywords
+                        )
                         items = connector.fetch_by_keywords(
-                            pipeline_cfg.keywords, limit=30, region=region,
+                            keywords, limit=30, region=region,
                         )
                     else:
                         kw = pipeline_cfg.keywords if pipeline_cfg else None
@@ -180,6 +215,8 @@ def run_pipeline(triggered_by: str = "manual", config_id: int | None = None) -> 
                             platform=d["platform"],
                             source_region=d["source_region"],
                             content_type=d["content_type"],
+                            source_url=d.get("source_url", ""),
+                            platform_metadata=d.get("platform_metadata", {}),
                         ))
                     logger.info(
                         "%s connector: %d items ingested.",

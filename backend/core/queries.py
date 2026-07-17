@@ -8,6 +8,9 @@ Each function returns a list of dicts suitable for API serialization.
 from __future__ import annotations
 
 import logging
+import json
+from collections import Counter, defaultdict
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from core.database import get_connection
@@ -22,6 +25,7 @@ def get_top_videos_per_niche(
     region: Optional[str] = None,
     category: Optional[str] = None,
     content_type: Optional[str] = None,
+    platform: Optional[str] = None,
     pipeline_run_id: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """
@@ -47,6 +51,9 @@ def get_top_videos_per_niche(
     if content_type and content_type != "all":
         conditions.append("content_type = ?")
         params.append(content_type)
+    if platform:
+        conditions.append("LOWER(platform) = ?")
+        params.append(platform.lower())
 
     where = " AND ".join(conditions)
     query = f"""
@@ -619,4 +626,305 @@ def get_videos_with_topics(
         "get_videos_with_topics(days=%d, run_id=%s): %d results", days, pipeline_run_id, len(results)
     )
     return results
+
+
+# ---------------------------------------------------------------------------
+# Reddit intelligence queries
+# ---------------------------------------------------------------------------
+_REDDIT_SENTIMENTS = {"positive", "neutral", "negative", "mixed"}
+
+
+def _json_object(value: Any) -> Dict[str, Any]:
+    """Parse persisted JSON defensively; historical rows may not have it."""
+    if isinstance(value, dict):
+        return value
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+        return parsed if isinstance(parsed, dict) else {}
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+
+
+def _json_list(value: Any) -> List[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+        return [str(item).strip() for item in parsed if str(item).strip()] if isinstance(parsed, list) else []
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+
+
+def _reddit_datetime(value: Any) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def _reddit_record(row: Dict[str, Any]) -> Dict[str, Any]:
+    metadata = _json_object(row.get("platform_metadata"))
+    insights = _json_object(row.get("reddit_insights"))
+    created = _reddit_datetime(row.get("published_at"))
+    age_hours = max((datetime.now(timezone.utc) - created).total_seconds() / 3600, 1.0) if created else None
+    upvotes = int(metadata.get("upvotes", row.get("likes", 0)) or 0)
+    comments = int(row.get("comments", 0) or 0)
+    ratio = metadata.get("upvote_ratio")
+    try:
+        upvote_ratio = min(max(float(ratio), 0.0), 1.0) if ratio is not None else None
+    except (TypeError, ValueError):
+        upvote_ratio = None
+    sentiment = insights.get("sentiment")
+    sentiment = sentiment if sentiment in _REDDIT_SENTIMENTS else None
+    raw_opportunity = insights.get("opportunity_score")
+    try:
+        opportunity_score = max(0, min(100, int(raw_opportunity))) if raw_opportunity is not None else round(float(row.get("score", 0)) * 100)
+    except (TypeError, ValueError):
+        opportunity_score = None
+    topics = _json_list(row.get("topics"))
+    cluster = insights.get("cluster") or (topics[0] if topics else None)
+    subreddit = str(metadata.get("subreddit", "")).removeprefix("r/").strip() or None
+    author = str(metadata.get("author", row.get("channel", ""))).strip() or None
+    return {
+        "id": row.get("video_id", ""),
+        "title": row.get("title", ""),
+        "body": row.get("description", ""),
+        "subreddit": subreddit,
+        "author": author,
+        "upvotes": upvotes,
+        "comments": comments,
+        "upvote_ratio": upvote_ratio,
+        "flair": metadata.get("flair") or None,
+        "created_at": row.get("published_at") or None,
+        "source_url": row.get("source_url") or metadata.get("permalink") or None,
+        "thumbnail_url": row.get("thumbnail_url") or None,
+        "score": float(row.get("score", 0) or 0),
+        "velocity": round((upvotes + comments) / age_hours, 2) if age_hours else None,
+        "sentiment": sentiment,
+        "analysis_status": insights.get("analysis_status", "pending"),
+        "pain_points": [str(item) for item in insights.get("pain_points", []) if str(item).strip()][:3],
+        "cluster": str(cluster).strip() if cluster else None,
+        "topics": topics,
+        "opportunity_score": opportunity_score,
+        "opportunity_source": "enrichment" if raw_opportunity is not None else "engagement_model",
+        "updated_at": row.get("updated_at") or None,
+    }
+
+
+def _reddit_rows(
+    days: int = 30,
+    pipeline_run_id: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    conditions = ["platform = 'reddit'"]
+    params: list[Any] = []
+    if pipeline_run_id is not None:
+        conditions.append("pipeline_run_id = ?")
+        params.append(pipeline_run_id)
+    if days:
+        conditions.append("(published_at IS NULL OR published_at = '' OR published_at >= datetime('now', ?))")
+        params.append(f"-{days} days")
+    query = f"""
+        SELECT video_id, title, description, channel, likes, comments, score,
+               published_at, thumbnail_url, topics, source_url,
+               platform_metadata, reddit_insights, updated_at
+        FROM videos
+        WHERE {' AND '.join(conditions)}
+        ORDER BY published_at DESC, score DESC
+        LIMIT 3000;
+    """
+    with get_connection() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [_reddit_record(dict(row)) for row in rows]
+
+
+def get_reddit_discussions(
+    *, days: int = 30, limit: int = 50, pipeline_run_id: Optional[int] = None,
+    search: Optional[str] = None, subreddit: Optional[str] = None,
+    sentiment: Optional[str] = None, min_upvotes: int = 0, min_comments: int = 0,
+    min_opportunity: int = 0, sort_by: str = "velocity",
+) -> List[Dict[str, Any]]:
+    records = _reddit_rows(days, pipeline_run_id)
+    term = (search or "").strip().lower()
+    requested_subreddit = (subreddit or "").removeprefix("r/").strip().lower()
+    requested_sentiment = (sentiment or "").strip().lower()
+    filtered = []
+    for record in records:
+        haystack = " ".join([
+            record.get("title") or "", record.get("body") or "", record.get("author") or "",
+            record.get("subreddit") or "", " ".join(record.get("topics") or []), record.get("cluster") or "",
+        ]).lower()
+        if term and term not in haystack:
+            continue
+        if requested_subreddit and (record.get("subreddit") or "").lower() != requested_subreddit:
+            continue
+        if requested_sentiment and record.get("sentiment") != requested_sentiment:
+            continue
+        if record.get("upvotes", 0) < min_upvotes or record.get("comments", 0) < min_comments:
+            continue
+        if (record.get("opportunity_score") or 0) < min_opportunity:
+            continue
+        filtered.append(record)
+    sorters = {
+        "engagement": lambda item: item.get("upvotes", 0) + item.get("comments", 0),
+        "recency": lambda item: _reddit_datetime(item.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc),
+        "opportunity": lambda item: item.get("opportunity_score") or 0,
+        "velocity": lambda item: item.get("velocity") or 0,
+    }
+    filtered.sort(key=sorters.get(sort_by, sorters["velocity"]), reverse=True)
+    return filtered[:max(1, min(limit, 100))]
+
+
+def get_reddit_overview(days: int = 30, pipeline_run_id: Optional[int] = None) -> Dict[str, Any]:
+    records = _reddit_rows(days, pipeline_run_id)
+    known_subreddits = {item["subreddit"] for item in records if item.get("subreddit")}
+    ratios = [item["upvote_ratio"] for item in records if item.get("upvote_ratio") is not None]
+    opportunities = [item["opportunity_score"] for item in records if item.get("opportunity_score") is not None]
+    topic_velocity: Dict[str, List[float]] = defaultdict(list)
+    for item in records:
+        for topic in ([item.get("cluster")] if item.get("cluster") else item.get("topics", [])):
+            if topic:
+                topic_velocity[topic].append(item.get("velocity") or 0)
+    fastest_topic = None
+    if topic_velocity:
+        topic, velocities = max(topic_velocity.items(), key=lambda pair: sum(pair[1]) / len(pair[1]))
+        fastest_topic = {"name": topic, "velocity": round(sum(velocities) / len(velocities), 2)}
+    latest = max((item.get("updated_at") for item in records if item.get("updated_at")), default=None)
+    analyzed = sum(1 for item in records if item.get("analysis_status") == "complete")
+    return {
+        "days": days,
+        "posts_analyzed": len(records),
+        "active_subreddits": len(known_subreddits),
+        "total_comments": sum(item.get("comments", 0) for item in records),
+        "avg_upvote_ratio": round(sum(ratios) / len(ratios), 4) if ratios else None,
+        "fastest_growing_topic": fastest_topic,
+        "opportunity_score": round(sum(opportunities) / len(opportunities)) if opportunities else None,
+        "analysis_coverage": round((analyzed / len(records)) * 100, 1) if records else 0.0,
+        "last_indexed_at": latest,
+    }
+
+
+def get_trending_subreddits(days: int = 30, limit: int = 8, pipeline_run_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for record in _reddit_rows(days, pipeline_run_id):
+        if record.get("subreddit"):
+            groups[record["subreddit"]].append(record)
+    result = []
+    for name, records in groups.items():
+        topics = Counter(topic for record in records for topic in record.get("topics", [])).most_common(3)
+        result.append({
+            "name": name,
+            "member_count": None,
+            "posts": len(records),
+            "comments": sum(record.get("comments", 0) for record in records),
+            "momentum": round(sum(record.get("velocity") or 0 for record in records), 2),
+            "topics": [topic for topic, _ in topics],
+            "activity": [sum(1 for record in records if (_reddit_datetime(record.get("created_at")) and (datetime.now(timezone.utc) - _reddit_datetime(record.get("created_at"))).days == offset)) for offset in range(6, -1, -1)],
+        })
+    result.sort(key=lambda item: item["momentum"], reverse=True)
+    return result[:max(1, min(limit, 20))]
+
+
+def get_reddit_pain_points(days: int = 30, limit: int = 10, pipeline_run_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    groups: Dict[str, Dict[str, Any]] = {}
+    for record in _reddit_rows(days, pipeline_run_id):
+        for statement in record.get("pain_points", []):
+            key = statement.strip().lower()
+            if not key:
+                continue
+            group = groups.setdefault(key, {"statement": statement.strip(), "mentions": 0, "subreddits": set(), "sentiments": [], "opportunities": [], "post_ids": []})
+            group["mentions"] += 1
+            if record.get("subreddit"):
+                group["subreddits"].add(record["subreddit"])
+            if record.get("sentiment"):
+                group["sentiments"].append(record["sentiment"])
+            if record.get("opportunity_score") is not None:
+                group["opportunities"].append(record["opportunity_score"])
+            group["post_ids"].append(record["id"])
+    result = []
+    for group in groups.values():
+        result.append({
+            "statement": group["statement"], "mentions": group["mentions"],
+            "subreddits": sorted(group["subreddits"]),
+            "sentiment": Counter(group["sentiments"]).most_common(1)[0][0] if group["sentiments"] else None,
+            "opportunity_score": round(sum(group["opportunities"]) / len(group["opportunities"])) if group["opportunities"] else None,
+            "post_ids": group["post_ids"][:10],
+        })
+    result.sort(key=lambda item: (item["mentions"], item["opportunity_score"] or 0), reverse=True)
+    return result[:max(1, min(limit, 30))]
+
+
+def get_reddit_clusters(days: int = 30, limit: int = 10, pipeline_run_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for record in _reddit_rows(days, pipeline_run_id):
+        names = [record["cluster"]] if record.get("cluster") else record.get("topics", [])
+        for name in names:
+            if name:
+                groups[str(name)].append(record)
+    result = []
+    for name, records in groups.items():
+        keywords = Counter(topic for record in records for topic in record.get("topics", []) if topic != name).most_common(4)
+        result.append({
+            "name": name, "post_count": len(records),
+            "momentum": round(sum(record.get("velocity") or 0 for record in records), 2),
+            "keywords": [keyword for keyword, _ in keywords],
+            "subreddits": sorted({record["subreddit"] for record in records if record.get("subreddit")})[:4],
+            "sentiment": dict(Counter(record["sentiment"] for record in records if record.get("sentiment"))),
+        })
+    result.sort(key=lambda item: item["momentum"], reverse=True)
+    return result[:max(1, min(limit, 30))]
+
+
+def get_reddit_sentiment(days: int = 30, pipeline_run_id: Optional[int] = None) -> Dict[str, Any]:
+    records = _reddit_rows(days, pipeline_run_id)
+    counts = Counter(record["sentiment"] for record in records if record.get("sentiment") in _REDDIT_SENTIMENTS)
+    total = sum(counts.values())
+    return {
+        "total_analyzed": total,
+        "coverage": round((total / len(records)) * 100, 1) if records else 0.0,
+        "distribution": [{"label": label, "count": counts.get(label, 0), "percent": round((counts.get(label, 0) / total) * 100, 1) if total else 0.0} for label in ("positive", "neutral", "negative", "mixed")],
+    }
+
+
+def get_reddit_opportunities(days: int = 30, limit: int = 10, pipeline_run_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for record in _reddit_rows(days, pipeline_run_id):
+        name = record.get("cluster") or (record.get("topics") or [None])[0]
+        if name:
+            groups[str(name)].append(record)
+    result = []
+    for name, records in groups.items():
+        scores = [record["opportunity_score"] for record in records if record.get("opportunity_score") is not None]
+        result.append({
+            "niche": name,
+            "opportunity_score": round(sum(scores) / len(scores)) if scores else None,
+            "momentum": round(sum(record.get("velocity") or 0 for record in records), 2),
+            "communities": len({record["subreddit"] for record in records if record.get("subreddit")}),
+        })
+    result.sort(key=lambda item: ((item["opportunity_score"] or 0), item["momentum"]), reverse=True)
+    return result[:max(1, min(limit, 30))]
+
+
+def get_reddit_contributors(days: int = 30, limit: int = 10, pipeline_run_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for record in _reddit_rows(days, pipeline_run_id):
+        author = record.get("author")
+        if author and author.lower() not in {"[deleted]", "deleted"}:
+            groups[author].append(record)
+    result = []
+    for author, records in groups.items():
+        result.append({
+            "username": author, "post_count": len(records),
+            "comment_count": sum(record.get("comments", 0) for record in records),
+            "momentum": round(sum(record.get("velocity") or 0 for record in records), 2),
+            "subreddit": Counter(record.get("subreddit") for record in records if record.get("subreddit")).most_common(1)[0][0] if any(record.get("subreddit") for record in records) else None,
+        })
+    result.sort(key=lambda item: (item["post_count"], item["momentum"]), reverse=True)
+    return result[:max(1, min(limit, 30))]
 

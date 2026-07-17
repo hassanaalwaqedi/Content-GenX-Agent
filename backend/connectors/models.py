@@ -114,6 +114,10 @@ class NormalizedContent(BaseModel):
 
     # ---- Source ------------------------------------------------------------
     source_url: str = Field(default="", description="Direct link to content")
+    platform_metadata: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Platform-specific metadata retained for platform intelligence",
+    )
     raw_payload: Dict[str, Any] = Field(
         default_factory=dict,
         description="Original platform JSON for debugging",
@@ -155,6 +159,7 @@ class NormalizedContent(BaseModel):
             "saves": self.saves,
             "author_followers": self.author_followers,
             "source_url": self.source_url,
+            "platform_metadata": self.platform_metadata,
             "raw_payload": json.dumps(self.raw_payload) if self.raw_payload else "",
             # Relevance intelligence
             "relevance_score": self.relevance_score,

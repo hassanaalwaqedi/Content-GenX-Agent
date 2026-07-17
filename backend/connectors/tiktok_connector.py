@@ -329,15 +329,24 @@ class TikTokConnector(BaseConnector, ApifyMixin):
         if not isinstance(video_meta, dict):
             video_meta = {}
 
-        thumbnail_url = (
+        # The current clockworks actor exposes a signed preview as
+        # ``videoMeta.coverUrl``. Older actor versions used ``cover`` and
+        # ``originCover`` instead, so retain those aliases for existing runs.
+        cover_candidates = [
+            video_meta.get("coverUrl", ""),
+            video_meta.get("originalCoverUrl", ""),
+            video_meta.get("cover", ""),
+            video_meta.get("originCover", ""),
             raw_payload.get("covers", {}).get("default", "")
-            if isinstance(raw_payload.get("covers"), dict) else ""
-        ) or (
-            video_meta.get("cover", "")
-            or video_meta.get("originCover", "")
-            or raw_payload.get("cover", "")
-            or raw_payload.get("origin_cover", "")
-            or ""
+            if isinstance(raw_payload.get("covers"), dict) else "",
+            raw_payload.get("coverUrl", ""),
+            raw_payload.get("cover", ""),
+            raw_payload.get("origin_cover", ""),
+            raw_payload.get("thumbnailUrl", ""),
+        ]
+        thumbnail_url = next(
+            (str(candidate).strip() for candidate in cover_candidates if str(candidate or "").strip()),
+            "",
         )
 
         # ── Timestamp ──

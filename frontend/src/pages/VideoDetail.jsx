@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { api } from '../api/client';
 import { exportTranscriptPDF } from '../api/export';
@@ -59,7 +59,7 @@ export default function VideoDetail() {
   }, [id]);
 
   // Highlight search matches in transcript
-  const highlightedTranscript = useMemo(() => {
+  const highlightedTranscript = (() => {
     if (!video?.transcript || !searchTerm.trim()) return null;
     const term = searchTerm.trim();
     const regex = new RegExp(`(${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
@@ -69,14 +69,14 @@ export default function VideoDetail() {
         ? <mark key={i} style={{ background: '#f59e0b33', color: '#f59e0b', borderRadius: 2, padding: '0 2px' }}>{part}</mark>
         : part
     );
-  }, [video?.transcript, searchTerm]);
+  })();
 
-  const matchCount = useMemo(() => {
+  const matchCount = (() => {
     if (!video?.transcript || !searchTerm.trim()) return 0;
     const term = searchTerm.trim();
     const regex = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
     return (video.transcript.match(regex) || []).length;
-  }, [video?.transcript, searchTerm]);
+  })();
 
   const handleCopy = async () => {
     if (!video?.transcript) return;

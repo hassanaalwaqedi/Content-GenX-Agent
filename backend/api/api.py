@@ -13,6 +13,7 @@ Endpoints:
 
 from __future__ import annotations
 
+import hmac
 import logging
 import threading
 from contextlib import asynccontextmanager
@@ -21,35 +22,31 @@ import requests
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Query, Security
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Security
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 
-from api.auth import auth_router
+from api.auth import auth_router, require_auth
+from api.creators import creators_router
+from api.datasets import datasets_router, resolve_dataset_id
+from api.middleware import RequestProtectionMiddleware
+from api.reddit import reddit_router
+from api.schemas import TopVideosResponse, VideoResponse
+from api.system import system_router
+from api.versioning import V1PathPrefixMiddleware
+from api.videos import videos_router
 from core.config import get_settings
+from core.logging import configure_logging
 from core.database import (
-    init_db, get_video_count, get_distinct_niches, get_pipeline_history,
-    is_pipeline_running, save_pipeline_config, get_pipeline_config,
+    init_db, get_pipeline_history,
+    save_pipeline_config, get_pipeline_config,
     list_pipeline_configs, delete_pipeline_config, get_last_used_config,
-    get_active_dataset, set_active_dataset, get_dataset_list, get_dataset_stats,
+    acquire_pipeline_lock, release_pipeline_lock,
 )
 from core.queries import (
-    get_fastest_growing_videos,
-    get_top_creators,
-    get_creator_intelligence,
-    get_rising_creators,
-    get_creators_by_trend,
-    get_creator_videos,
-    get_top_videos_per_niche,
-    get_video_by_id,
-    get_video_stats,
-    get_transcript_stats,
-    get_transcript_by_video_id,
     get_videos_with_topics,
-    update_transcript,
 )
-from pipeline.transcripts import fetch_transcript_segments, extract_first_30s
 from pipeline.trends import discover_trends, discover_opportunities
 
 logger = logging.getLogger(__name__)
@@ -68,12 +65,7 @@ def _resolve_dataset_id(dataset_id: Optional[int]) -> Optional[int]:
     - dataset_id=None → look up the active dataset and return its run ID
     Returns None if no active dataset exists (backward compat: shows all).
     """
-    if dataset_id is not None:
-        if dataset_id == 0:
-            return None  # Sentinel: all historical data, no scoping
-        return dataset_id
-    active = get_active_dataset()
-    return active["id"] if active else None
+    return resolve_dataset_id(dataset_id)
 
 
 # ---------------------------------------------------------------------------
@@ -83,8 +75,13 @@ def _resolve_dataset_id(dataset_id: Optional[int]) -> Optional[int]:
 async def lifespan(app: FastAPI):
     """Manage application startup and shutdown lifecycle."""
     # ---- Startup ----
+    configure_logging(_settings)
     init_db()
-    logger.info("API startup complete -- database initialized.")
+    logger.info(
+        "API startup complete -- database initialized; rate_limit=%s/%ss.",
+        _settings.api_rate_limit_requests,
+        _settings.api_rate_limit_window_seconds,
+    )
     yield
     # ---- Shutdown ----
     logger.info("API shutting down gracefully.")
@@ -108,6 +105,12 @@ app = FastAPI(
 
 # CORS -- allow specific origins only (no wildcard with credentials)
 _settings = get_settings()
+app.add_middleware(V1PathPrefixMiddleware)
+app.add_middleware(
+    RequestProtectionMiddleware,
+    max_requests=_settings.api_rate_limit_requests,
+    window_seconds=_settings.api_rate_limit_window_seconds,
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_settings.cors_allowed_origins,
@@ -118,88 +121,33 @@ app.add_middleware(
 
 # Auth routes
 app.include_router(auth_router)
+app.include_router(creators_router)
+app.include_router(datasets_router)
+app.include_router(reddit_router)
+app.include_router(system_router)
+app.include_router(videos_router)
 
-# Pipeline authentication (optional shared-secret API key)
+# Pipeline authentication (authenticated operator or optional shared API key)
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
-async def _verify_pipeline_key(
-    api_key: str = Security(_api_key_header),
+async def _verify_pipeline_access(
+    request: Request,
+    api_key: Optional[str] = Security(_api_key_header),
 ) -> None:
-    """Verify the pipeline API key if one is configured."""
+    """Authorize a costly scan without exposing an unauthenticated trigger."""
     required_key = _settings.pipeline_api_key
-    if not required_key:
-        return  # Auth disabled -- no key configured
-    if api_key != required_key:
-        raise HTTPException(
-            status_code=403,
-            detail="Invalid or missing X-API-Key header.",
-        )
+    if required_key and api_key and hmac.compare_digest(api_key, required_key):
+        return
+
+    # The browser client already sends its JWT/cookie. Keeping the shared key
+    # as an alternative preserves service-to-service automation.
+    await require_auth(request, request.cookies.get("genx_session"))
 
 
 # ---------------------------------------------------------------------------
 # Response models
 # ---------------------------------------------------------------------------
-class HealthResponse(BaseModel):
-    status: str = Field(..., example="healthy")
-    timestamp: str
-    total_videos: int
-    niches: List[str]
-    database: str = Field(..., example="connected")
-
-
-class VideoResponse(BaseModel):
-    video_id: str
-    platform: str = "youtube"
-    niche: str
-    title: str
-    views: int
-    likes: int
-    comments: int
-    engagement_rate: float
-    score: float
-    published_at: Optional[str] = None
-    channel: Optional[str] = None
-    thumbnail_url: Optional[str] = None
-    target_audience: Optional[str] = None
-    strategic_advice: Optional[str] = None
-    content_gap: Optional[str] = None
-    source_region: Optional[str] = None
-    content_type: Optional[str] = None
-
-
-class VideoDetailResponse(BaseModel):
-    """Full video detail including description and audit timestamps."""
-    video_id: str
-    platform: str = "youtube"
-    niche: str
-    title: str
-    views: int
-    likes: int
-    comments: int
-    engagement_rate: float
-    score: float
-    published_at: Optional[str] = None
-    channel: Optional[str] = None
-    thumbnail_url: Optional[str] = None
-    description: Optional[str] = None
-    target_audience: Optional[str] = None
-    strategic_advice: Optional[str] = None
-    content_gap: Optional[str] = None
-    transcript: Optional[str] = None
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
-
-
-class CreatorResponse(BaseModel):
-    channel: str
-    video_count: int
-    total_views: int
-    avg_engagement_rate: float
-    avg_score: float
-    total_score: float
-
-
 class PipelineRunResponse(BaseModel):
     status: str
     message: str
@@ -223,52 +171,6 @@ class PipelineRunRecord(BaseModel):
 class PipelineHistoryResponse(BaseModel):
     count: int
     runs: List[PipelineRunRecord]
-
-
-class StatsResponse(BaseModel):
-    total_videos: int
-    total_niches: int
-    total_channels: int
-    avg_score: Optional[float] = None
-    avg_engagement_rate: Optional[float] = None
-    max_score: Optional[float] = None
-    earliest_video: Optional[str] = None
-    latest_video: Optional[str] = None
-    niche_stats: Optional[Dict[str, Any]] = None
-    platform_stats: Optional[Dict[str, Any]] = None
-
-
-class TranscriptStatsResponse(BaseModel):
-    total_youtube: int = 0
-    with_transcript: int = 0
-    without_transcript: int = 0
-    coverage_pct: float = 0.0
-    niche_breakdown: Optional[List[Dict[str, Any]]] = None
-
-
-class TopVideosResponse(BaseModel):
-    niche: str
-    days: int
-    count: int
-    videos: List[VideoResponse]
-
-
-class TrendingVideosResponse(BaseModel):
-    days: int
-    count: int
-    videos: List[VideoResponse]
-
-
-class TopCreatorsResponse(BaseModel):
-    count: int
-    creators: List[CreatorResponse]
-
-
-class TranscriptResponse(BaseModel):
-    video_id: str
-    transcript: str
-    transcript_30s: str
-    cached: bool = False
 
 
 class TrendVideoSummary(BaseModel):
@@ -321,390 +223,15 @@ class OpportunitiesResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
-@app.get(
-    "/health",
-    response_model=HealthResponse,
-    summary="System health check",
-    tags=["System"],
-)
-async def health() -> HealthResponse:
-    """Return current system status, video count, and available niches."""
+def _launch_pipeline(config_id: Optional[int], triggered_by: str = "api") -> PipelineRunResponse:
+    """Reserve the database lock before starting the background scan thread."""
     try:
-        total = get_video_count()
-        niches = get_distinct_niches()
-        db_status = "connected"
-    except Exception as exc:
-        logger.error("Health check database error: %s", exc)
-        raise HTTPException(status_code=503, detail="Database unavailable")
-
-    return HealthResponse(
-        status="healthy",
-        timestamp=datetime.now(timezone.utc).isoformat(),
-        total_videos=total,
-        niches=niches,
-        database=db_status,
-    )
-
-
-@app.get(
-    "/videos/top",
-    response_model=TopVideosResponse,
-    summary="Top videos (optionally filter by category)",
-    tags=["Videos"],
-)
-async def top_videos(
-    niche: Optional[str] = Query(
-        default=None, description="Category to filter by (e.g. 'music', 'sports'). Omit for all categories."
-    ),
-    days: int = Query(
-        default=30,
-        ge=1,
-        le=365,
-        description="Look-back window in days",
-    ),
-    limit: int = Query(default=20, ge=1, le=100),
-    region: Optional[str] = Query(default=None, description="Filter by source region code (e.g. US, DE)"),
-    category: Optional[str] = Query(default=None, description="Filter by category/niche"),
-    content_type: Optional[str] = Query(default=None, description="Filter by content type (shorts, long, all)"),
-    dataset_id: Optional[int] = Query(default=None, description="Pipeline run ID to scope data to. Defaults to active dataset."),
-) -> TopVideosResponse:
-    """Return the highest-scoring videos, optionally filtered by category, region, content_type."""
-    run_id = _resolve_dataset_id(dataset_id)
-    try:
-        rows = get_top_videos_per_niche(
-            niche, days=days, limit=limit,
-            region=region, category=category, content_type=content_type,
-            pipeline_run_id=run_id,
+        init_db()
+        run_id = acquire_pipeline_lock(
+            triggered_by=triggered_by,
+            config_snapshot={"config_id": config_id} if config_id else {},
         )
-    except Exception as exc:
-        logger.error("Error fetching top videos: %s", exc)
-        raise HTTPException(status_code=500, detail="Internal query error")
-
-    videos = [VideoResponse(**r) for r in rows]
-    for v in videos:
-        if not v.thumbnail_url:
-            v.thumbnail_url = DEFAULT_THUMBNAIL
-    return TopVideosResponse(
-        niche=niche or "all", days=days, count=len(videos), videos=videos
-    )
-
-
-@app.get(
-    "/videos/trending",
-    response_model=TrendingVideosResponse,
-    summary="Fastest-growing / trending videos",
-    tags=["Videos"],
-)
-async def trending_videos(
-    days: int = Query(default=7, ge=1, le=90),
-    limit: int = Query(default=20, ge=1, le=100),
-    region: Optional[str] = Query(default=None, description="Filter by source region code"),
-    category: Optional[str] = Query(default=None, description="Filter by category/niche"),
-    content_type: Optional[str] = Query(default=None, description="Filter by content type"),
-    dataset_id: Optional[int] = Query(default=None, description="Pipeline run ID to scope data to. Defaults to active dataset."),
-) -> TrendingVideosResponse:
-    """Return videos that are gaining traction rapidly."""
-    run_id = _resolve_dataset_id(dataset_id)
-    try:
-        rows = get_fastest_growing_videos(
-            days=days, limit=limit,
-            region=region, category=category, content_type=content_type,
-            pipeline_run_id=run_id,
-        )
-    except Exception as exc:
-        logger.error("Error fetching trending videos: %s", exc)
-        raise HTTPException(status_code=500, detail="Internal query error")
-
-    videos = [VideoResponse(**r) for r in rows]
-    for v in videos:
-        if not v.thumbnail_url:
-            v.thumbnail_url = DEFAULT_THUMBNAIL
-    return TrendingVideosResponse(days=days, count=len(videos), videos=videos)
-
-
-@app.get(
-    "/videos/{video_id}",
-    response_model=VideoDetailResponse,
-    summary="Get video details",
-    tags=["Videos"],
-)
-async def video_detail(video_id: str) -> VideoDetailResponse:
-    """Return full details for a single video by its YouTube ID."""
-    try:
-        row = get_video_by_id(video_id)
-    except Exception as exc:
-        logger.error("Error fetching video %s: %s", video_id, exc)
-        raise HTTPException(status_code=500, detail="Internal query error")
-
-    if not row:
-        raise HTTPException(status_code=404, detail=f"Video '{video_id}' not found.")
-
-    detail = VideoDetailResponse(**row)
-    if not detail.thumbnail_url:
-        detail.thumbnail_url = DEFAULT_THUMBNAIL
-    return detail
-
-
-@app.post(
-    "/videos/{video_id}/transcript",
-    response_model=TranscriptResponse,
-    summary="Fetch video transcript on-demand",
-    tags=["Videos"],
-)
-async def fetch_video_transcript(video_id: str) -> TranscriptResponse:
-    """
-    On-demand transcript fetching with DB caching.
-
-    1. Check DB for existing transcript.
-    2. If found → return cached result.
-    3. If missing → fetch from YouTube, store in DB, return.
-    """
-    # Check if video exists
-    existing = get_transcript_by_video_id(video_id)
-    if existing is None:
-        raise HTTPException(status_code=404, detail=f"Video '{video_id}' not found.")
-
-    # If transcript already cached in DB
-    if existing.strip():
-        # We have a cached transcript but no segments for 30s extraction.
-        # Use a simple heuristic: split on sentences, take first ~30s worth.
-        # For cached transcripts, approximate 30s ≈ first 80 words.
-        words = existing.split()
-        transcript_30s = " ".join(words[:80]) if len(words) > 80 else existing
-        return TranscriptResponse(
-            video_id=video_id,
-            transcript=existing,
-            transcript_30s=transcript_30s,
-            cached=True,
-        )
-
-    # Fetch fresh from YouTube
-    try:
-        segments = fetch_transcript_segments(video_id)
-        if not segments:
-            raise HTTPException(
-                status_code=404,
-                detail="No transcript available for this video. Captions may be disabled.",
-            )
-
-        full_text = " ".join(s["text"] for s in segments)
-        full_text = " ".join(full_text.split())  # clean whitespace
-
-        # Truncate for storage
-        if len(full_text) > 5000:
-            full_text = full_text[:5000] + "..."
-
-        transcript_30s = extract_first_30s(segments)
-
-        # Cache in DB
-        update_transcript(video_id, full_text)
-
-        return TranscriptResponse(
-            video_id=video_id,
-            transcript=full_text,
-            transcript_30s=transcript_30s,
-            cached=False,
-        )
-
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.error("Error fetching transcript for %s: %s", video_id, exc)
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to fetch transcript. Please try again later.",
-        )
-
-
-@app.get(
-    "/creators/top",
-    response_model=TopCreatorsResponse,
-    summary="Top content creators",
-    tags=["Creators"],
-)
-async def top_creators(
-    limit: int = Query(default=20, ge=1, le=100),
-    min_videos: int = Query(
-        default=2,
-        ge=1,
-        description="Minimum number of videos to qualify",
-    ),
-    dataset_id: Optional[int] = Query(default=None, description="Pipeline run ID to scope data to."),
-) -> TopCreatorsResponse:
-    """Return creators ranked by aggregate score and engagement."""
-    run_id = _resolve_dataset_id(dataset_id)
-    try:
-        rows = get_top_creators(limit=limit, min_videos=min_videos, pipeline_run_id=run_id)
-    except Exception as exc:
-        logger.error("Error fetching top creators: %s", exc)
-        raise HTTPException(status_code=500, detail="Internal query error")
-
-    creators = [CreatorResponse(**r) for r in rows]
-    return TopCreatorsResponse(count=len(creators), creators=creators)
-
-
-@app.get(
-    "/creators/intelligence",
-    summary="Creator intelligence with advanced metrics",
-    tags=["Creators"],
-)
-async def creator_intelligence(
-    days: int = Query(default=365, ge=1, le=730),
-    limit: int = Query(default=30, ge=1, le=100),
-    min_videos: int = Query(default=1, ge=1),
-    dataset_id: Optional[int] = Query(default=None, description="Pipeline run ID to scope data to."),
-):
-    """Return creators with trend dominance, topics, velocity, and opportunity alignment."""
-    run_id = _resolve_dataset_id(dataset_id)
-    try:
-        data = get_creator_intelligence(days=days, limit=limit, min_videos=min_videos, pipeline_run_id=run_id)
-    except Exception as exc:
-        logger.error("Error fetching creator intelligence: %s", exc)
-        raise HTTPException(status_code=500, detail="Internal query error")
-    return {"count": len(data), "creators": data}
-
-
-@app.get(
-    "/creators/rising",
-    summary="Rising creators with high growth velocity",
-    tags=["Creators"],
-)
-async def rising_creators(
-    days: int = Query(default=90, ge=1, le=365),
-    limit: int = Query(default=10, ge=1, le=50),
-    dataset_id: Optional[int] = Query(default=None, description="Pipeline run ID to scope data to."),
-):
-    """Return creators with highest recent velocity (growth momentum)."""
-    run_id = _resolve_dataset_id(dataset_id)
-    try:
-        data = get_rising_creators(days=days, limit=limit, pipeline_run_id=run_id)
-    except Exception as exc:
-        logger.error("Error fetching rising creators: %s", exc)
-        raise HTTPException(status_code=500, detail="Internal query error")
-    return {"count": len(data), "creators": data}
-
-
-@app.get(
-    "/creators/by-trend",
-    summary="Creators filtered by trend/topic",
-    tags=["Creators"],
-)
-async def creators_by_trend(
-    trend: str = Query(..., description="Trend or topic keyword to filter by"),
-    days: int = Query(default=365, ge=1, le=730),
-    limit: int = Query(default=20, ge=1, le=100),
-    dataset_id: Optional[int] = Query(default=None, description="Pipeline run ID to scope data to."),
-):
-    """Return creators whose content matches a given trend keyword."""
-    run_id = _resolve_dataset_id(dataset_id)
-    try:
-        data = get_creators_by_trend(trend=trend, days=days, limit=limit, pipeline_run_id=run_id)
-    except Exception as exc:
-        logger.error("Error fetching creators by trend: %s", exc)
-        raise HTTPException(status_code=500, detail="Internal query error")
-    return {"trend": trend, "count": len(data), "creators": data}
-
-
-@app.get(
-    "/creators/{channel}/videos",
-    summary="Get videos for a specific creator",
-    tags=["Creators"],
-)
-async def creator_videos(
-    channel: str,
-    limit: int = Query(default=20, ge=1, le=50),
-):
-    """Return top-scoring videos for a specific creator/channel."""
-    try:
-        data = get_creator_videos(channel=channel, limit=limit)
-    except Exception as exc:
-        logger.error("Error fetching creator videos: %s", exc)
-        raise HTTPException(status_code=500, detail="Internal query error")
-
-    videos = []
-    for v in data:
-        if not v.get("thumbnail_url"):
-            v["thumbnail_url"] = DEFAULT_THUMBNAIL
-        videos.append(v)
-    return {"channel": channel, "count": len(videos), "videos": videos}
-
-
-# ---------------------------------------------------------------------------
-# Dataset Management Endpoints
-# ---------------------------------------------------------------------------
-@app.get("/datasets", tags=["Datasets"], summary="List all completed pipeline runs as datasets")
-async def list_datasets(
-    limit: int = Query(default=20, ge=1, le=50),
-):
-    """Return all completed pipeline runs available as datasets for the workspace switcher."""
-    try:
-        datasets = get_dataset_list(limit=limit)
-    except Exception as exc:
-        logger.error("Error fetching dataset list: %s", exc)
-        raise HTTPException(status_code=500, detail="Internal query error")
-    return {"count": len(datasets), "datasets": datasets}
-
-
-@app.get("/datasets/active", tags=["Datasets"], summary="Get the currently active dataset")
-async def active_dataset():
-    """Return the active dataset with config and aggregate stats."""
-    try:
-        active = get_active_dataset()
-    except Exception as exc:
-        logger.error("Error fetching active dataset: %s", exc)
-        raise HTTPException(status_code=500, detail="Internal query error")
-
-    if not active:
-        return {"active": None, "stats": None}
-
-    try:
-        stats_data = get_dataset_stats(active["id"])
-    except Exception:
-        stats_data = {}
-
-    return {
-        "active": active,
-        "stats": stats_data,
-    }
-
-
-@app.post("/datasets/{run_id}/activate", tags=["Datasets"], summary="Set a pipeline run as active dataset")
-async def activate_dataset(run_id: int):
-    """Activate a specific pipeline run as the current workspace dataset."""
-    try:
-        set_active_dataset(run_id)
-        active = get_active_dataset()
-        stats_data = get_dataset_stats(run_id) if active else {}
-    except Exception as exc:
-        logger.error("Error activating dataset: %s", exc)
-        raise HTTPException(status_code=500, detail="Failed to activate dataset")
-
-    return {
-        "activated": True,
-        "active": active,
-        "stats": stats_data,
-    }
-
-
-@app.post(
-    "/pipeline/run",
-    response_model=PipelineRunResponse,
-    summary="Trigger pipeline manually",
-    tags=["Pipeline"],
-    dependencies=[Security(_verify_pipeline_key)],
-)
-async def run_pipeline_endpoint(
-    config_id: Optional[int] = Query(default=None, description="Pipeline config ID to use"),
-) -> PipelineRunResponse:
-    """
-    Trigger a full pipeline run (ingest -> process -> store).
-
-    Runs in a background thread so the API response returns immediately.
-    Only one pipeline run can be active at a time (enforced at DB level).
-    Optionally accepts a config_id for user-defined filters.
-    """
-    # Check database-level lock instead of in-memory flag
-    if is_pipeline_running():
+    except RuntimeError:
         raise HTTPException(
             status_code=409,
             detail="A pipeline run is already in progress.",
@@ -714,19 +241,60 @@ async def run_pipeline_endpoint(
         try:
             from pipeline.runner import run_pipeline  # deferred import
 
-            run_pipeline(triggered_by="api", config_id=config_id)
+            run_pipeline(
+                triggered_by=triggered_by,
+                config_id=config_id,
+                pre_acquired_run_id=run_id,
+            )
             logger.info("Background pipeline run completed.")
         except Exception as exc:
             logger.error("Background pipeline run failed: %s", exc, exc_info=True)
+            try:
+                release_pipeline_lock(
+                    run_id,
+                    {
+                        "status": "failed",
+                        "finished_at": datetime.now(timezone.utc).isoformat(),
+                        "error": "Background pipeline worker failed to start.",
+                    },
+                )
+            except Exception as release_exc:
+                logger.error("Unable to release failed pipeline run #%s: %s", run_id, release_exc)
 
     thread = threading.Thread(target=_background_run, daemon=True)
-    thread.start()
+    try:
+        thread.start()
+    except Exception as exc:
+        logger.error("Unable to start pipeline worker: %s", exc, exc_info=True)
+        release_pipeline_lock(
+            run_id,
+            {
+                "status": "failed",
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+                "error": "Unable to start pipeline worker.",
+            },
+        )
+        raise HTTPException(status_code=500, detail="Unable to start pipeline worker.") from exc
 
     return PipelineRunResponse(
         status="accepted",
         message=f"Pipeline triggered{f' with config #{config_id}' if config_id else ' (default config)'}.",
         triggered_at=datetime.now(timezone.utc).isoformat(),
     )
+
+
+@app.post(
+    "/pipeline/run",
+    response_model=PipelineRunResponse,
+    summary="Trigger pipeline manually",
+    tags=["Pipeline"],
+    dependencies=[Depends(_verify_pipeline_access)],
+)
+async def run_pipeline_endpoint(
+    config_id: Optional[int] = Query(default=None, description="Pipeline config ID to use"),
+) -> PipelineRunResponse:
+    """Trigger a full pipeline run (ingest -> process -> store)."""
+    return _launch_pipeline(config_id, triggered_by="api")
 
 
 @app.get(
@@ -780,7 +348,21 @@ class PipelineConfigResponse(BaseModel):
     updated_at: Optional[str] = None
 
 
-@app.post("/pipeline/config", tags=["Pipeline Config"], summary="Create or update a pipeline config")
+class RedditScanRequest(BaseModel):
+    """A Reddit-only pipeline request that reuses the existing run lock."""
+
+    regions: List[str] = Field(default=["US"])
+    keywords: List[str] = Field(default=[])
+    categories: List[str] = Field(default=[])
+    name: str = Field(default="Reddit Intelligence Scan", max_length=100)
+
+
+@app.post(
+    "/pipeline/config",
+    tags=["Pipeline Config"],
+    summary="Create or update a pipeline config",
+    dependencies=[Depends(require_auth)],
+)
 async def create_pipeline_config(req: PipelineConfigRequest):
     """Save a pipeline configuration with validation."""
     import re as _re
@@ -841,49 +423,41 @@ async def get_config(config_id: int):
     return {"config": config}
 
 
-@app.delete("/pipeline/config/{config_id}", tags=["Pipeline Config"], summary="Delete a pipeline config")
+@app.post(
+    "/platforms/reddit/scan",
+    response_model=PipelineRunResponse,
+    tags=["Reddit Intelligence"],
+    dependencies=[Depends(_verify_pipeline_access)],
+)
+async def run_reddit_scan(request: RedditScanRequest) -> PipelineRunResponse:
+    if not request.regions or len(request.regions) > 5:
+        raise HTTPException(400, "Select between one and five regions.")
+    invalid_regions = set(request.regions) - VALID_REGIONS
+    if invalid_regions:
+        raise HTTPException(400, f"Invalid regions: {', '.join(sorted(invalid_regions))}")
+    config_id = save_pipeline_config({
+        "name": request.name.strip() or "Reddit Intelligence Scan",
+        "regions": request.regions,
+        "platforms": ["reddit"],
+        "categories": [category.lower().strip() for category in request.categories[:15] if category.strip()],
+        "keywords": [keyword.strip() for keyword in request.keywords[:10] if keyword.strip()],
+        "content_type": "all",
+        "is_preset": False,
+    })
+    return _launch_pipeline(config_id, triggered_by="reddit")
+
+
+@app.delete(
+    "/pipeline/config/{config_id}",
+    tags=["Pipeline Config"],
+    summary="Delete a pipeline config",
+    dependencies=[Depends(require_auth)],
+)
 async def delete_config(config_id: int):
     deleted = delete_pipeline_config(config_id)
     if not deleted:
         raise HTTPException(404, f"Config #{config_id} not found.")
     return {"deleted": True, "id": config_id}
-
-
-@app.get(
-    "/stats",
-    response_model=StatsResponse,
-    summary="Database aggregate statistics",
-    tags=["System"],
-)
-async def stats(
-    dataset_id: Optional[int] = Query(default=None, description="Pipeline run ID to scope stats to. Defaults to active dataset."),
-) -> StatsResponse:
-    """Return aggregate statistics, scoped to active dataset by default."""
-    run_id = _resolve_dataset_id(dataset_id)
-    try:
-        data = get_video_stats(pipeline_run_id=run_id)
-    except Exception as exc:
-        logger.error("Error fetching stats: %s", exc)
-        raise HTTPException(status_code=500, detail="Internal query error")
-
-    return StatsResponse(**data)
-
-
-@app.get(
-    "/stats/transcripts",
-    response_model=TranscriptStatsResponse,
-    summary="Transcript extraction coverage",
-    tags=["System"],
-)
-async def transcript_stats() -> TranscriptStatsResponse:
-    """Return statistics on transcript extraction coverage."""
-    try:
-        data = get_transcript_stats()
-    except Exception as exc:
-        logger.error("Error fetching transcript stats: %s", exc)
-        raise HTTPException(status_code=500, detail="Internal query error")
-
-    return TranscriptStatsResponse(**data)
 
 
 # ---------------------------------------------------------------------------
@@ -899,6 +473,52 @@ def _video_to_summary(v: Dict[str, Any]) -> Dict[str, Any]:
         "score": v.get("score", 0.0),
         "thumbnail_url": v.get("thumbnail_url") or DEFAULT_THUMBNAIL,
     }
+
+
+def _normalize_trend_name(value: str) -> str:
+    """Normalize a trend label in the same way as the trend-clustering engine."""
+    return " ".join(str(value or "").lower().replace("_", " ").split())
+
+
+@app.get("/trends/videos", response_model=TopVideosResponse, tags=["Trends"])
+async def trend_videos(
+    trend: str = Query(..., min_length=1, description="Trend label returned by /trends/discover"),
+    days: int = Query(365, ge=1, le=365, description="Lookback window in days"),
+    limit: int = Query(500, ge=1, le=500, description="Maximum exact trend members to return"),
+    platform: Optional[str] = Query(default=None, description="Filter exact trend members by platform"),
+    dataset_id: Optional[int] = Query(default=None, description="Pipeline run ID to scope data to."),
+) -> TopVideosResponse:
+    """Return the exact database records that belong to a discovered trend cluster."""
+    run_id = _resolve_dataset_id(dataset_id)
+    requested_trend = _normalize_trend_name(trend)
+
+    try:
+        videos = get_videos_with_topics(days=days, limit=500, pipeline_run_id=run_id)
+        clusters = discover_trends(videos, min_count=1, limit=500)
+    except Exception as exc:
+        logger.error("Error resolving trend videos for %s: %s", trend, exc)
+        raise HTTPException(status_code=500, detail="Unable to resolve trend videos")
+
+    cluster = next(
+        (item for item in clusters if _normalize_trend_name(item.get("trend", "")) == requested_trend),
+        None,
+    )
+    if cluster is None:
+        return TopVideosResponse(niche=trend, days=days, count=0, videos=[])
+
+    rows = cluster["videos"]
+    if platform:
+        normalized_platform = platform.lower()
+        rows = [item for item in rows if str(item.get("platform", "")).lower() == normalized_platform]
+    rows = sorted(rows, key=lambda item: item.get("score", 0), reverse=True)[:limit]
+    videos_response = [VideoResponse(**row) for row in rows]
+    for video in videos_response:
+        if not video.thumbnail_url:
+            video.thumbnail_url = DEFAULT_THUMBNAIL
+
+    return TopVideosResponse(
+        niche=cluster["trend"], days=days, count=len(videos_response), videos=videos_response,
+    )
 
 
 @app.get("/trends/discover", response_model=TrendsDiscoverResponse, tags=["Trends"])
@@ -994,6 +614,7 @@ class ContentGenerateRequest(BaseModel):
     "/ai/generate-content",
     summary="Generate viral content from a trending video",
     tags=["AI"],
+    dependencies=[Depends(require_auth)],
 )
 async def generate_content(req: ContentGenerateRequest):
     """
@@ -1147,10 +768,7 @@ if __name__ == "__main__":
     import uvicorn
 
     settings = get_settings()
-    logging.basicConfig(
-        level=getattr(logging, settings.log_level),
-        format=settings.log_format,
-    )
+    configure_logging(settings)
     uvicorn.run(
         "api:app",
         host=settings.api_host,

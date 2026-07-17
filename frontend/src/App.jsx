@@ -10,6 +10,7 @@ import Trending from './pages/Trending';
 import VideoDetail from './pages/VideoDetail';
 import Creators from './pages/Creators';
 import Pipeline from './pages/Pipeline';
+import RedditIntelligence from './pages/RedditIntelligence';
 
 export default function App() {
   return (
@@ -35,6 +36,7 @@ export default function App() {
             <Route path="/video/:id" element={<VideoDetail />} />
             <Route path="/creators" element={<Creators />} />
             <Route path="/pipeline" element={<Pipeline />} />
+            <Route path="/platforms/reddit" element={<RedditIntelligence />} />
           </Route>
         </Routes>
       </AuthProvider>

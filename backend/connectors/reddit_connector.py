@@ -109,39 +109,44 @@ class RedditConnector(BaseConnector, ApifyMixin):
     ) -> List[NormalizedContent]:
         """Search Reddit by keywords via Apify."""
         effective_limit = min(limit, self._max_results)
-        query = keywords[0] if keywords else "trending"
-
-        actor_input = {
-            "searchQuery": query,
-            "sort": "relevance",
-            "timeFilter": "month",
-            "maxPostsPerSource": effective_limit,
-        }
-
-        self._logger.info(
-            "Reddit (Apify): searching keyword=%s (limit=%d)",
-            query, effective_limit,
-        )
-        raw_items = self.run_actor_sync(actor_input)
-        self._metrics.record_request(success=bool(raw_items))
+        search_terms = list(dict.fromkeys(term.strip() for term in keywords if term and term.strip()))[:4]
+        if not search_terms:
+            search_terms = ["trending"]
+        per_query_limit = max(effective_limit // len(search_terms), 5)
 
         results: List[NormalizedContent] = []
         seen_ids: set = set()
 
-        for raw in raw_items:
+        for query in search_terms:
+            actor_input = {
+                "searchQuery": query,
+                "sort": "relevance",
+                "timeFilter": "month",
+                "maxPostsPerSource": per_query_limit,
+            }
+            self._logger.info(
+                "Reddit (Apify): searching keyword=%s (limit=%d)",
+                query, per_query_limit,
+            )
+            raw_items = self.run_actor_sync(actor_input)
+            self._metrics.record_request(success=bool(raw_items))
+
+            for raw in raw_items:
+                if len(results) >= effective_limit:
+                    break
+                try:
+                    normalized = self.normalize_content(raw)
+                    if normalized and normalized.id not in seen_ids:
+                        seen_ids.add(normalized.id)
+                        results.append(normalized)
+                except Exception as exc:
+                    self._logger.debug("Reddit normalize failed: %s", exc)
             if len(results) >= effective_limit:
                 break
-            try:
-                normalized = self.normalize_content(raw)
-                if normalized and normalized.id not in seen_ids:
-                    seen_ids.add(normalized.id)
-                    results.append(normalized)
-            except Exception as exc:
-                self._logger.debug("Reddit normalize failed: %s", exc)
 
         self._logger.info(
-            "Reddit (Apify): fetched %d posts for keyword %s",
-            len(results), query,
+            "Reddit (Apify): fetched %d posts for keywords %s",
+            len(results), search_terms,
         )
         return results
 
@@ -233,6 +238,23 @@ class RedditConnector(BaseConnector, ApifyMixin):
         if source_url.startswith("/"):
             source_url = f"https://reddit.com{source_url}"
 
+        ratio = raw_payload.get("upvote_ratio", raw_payload.get("upvoteRatio"))
+        try:
+            upvote_ratio = min(max(float(ratio), 0.0), 1.0) if ratio is not None else None
+        except (TypeError, ValueError):
+            upvote_ratio = None
+
+        platform_metadata = {
+            "subreddit": str(subreddit or "").removeprefix("r/"),
+            "author": str(author or ""),
+            "upvotes": ups,
+            "score": score,
+            "upvote_ratio": upvote_ratio,
+            "flair": str(flair or ""),
+            "permalink": source_url,
+            "post_type": "self" if raw_payload.get("is_self") else "link",
+        }
+
         return NormalizedContent(
             id=f"reddit_{post_id}",
             platform="reddit",
@@ -250,6 +272,7 @@ class RedditConnector(BaseConnector, ApifyMixin):
             shares=0,
             saves=0,
             source_url=source_url,
+            platform_metadata=platform_metadata,
             raw_payload=raw_payload,
         )
 

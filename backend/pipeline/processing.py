@@ -52,6 +52,8 @@ class ProcessedVideo(BaseModel):
     score: float = Field(default=0.0, ge=0.0)
     source_region: str = ""
     content_type: str = "all"
+    source_url: str = ""
+    platform_metadata: Dict[str, Any] = Field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to dict for database insertion."""

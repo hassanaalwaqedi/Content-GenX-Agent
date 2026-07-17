@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import { createContext, useContext, useState, useCallback } from 'react';
 import { authApi } from '../api/client';
 
 const AuthContext = createContext(null);
@@ -25,7 +25,7 @@ function saveUserToStorage(user) {
 export function AuthProvider({ children }) {
   // Restore user from localStorage immediately (no API call needed)
   const [user, setUser] = useState(() => loadUserFromStorage());
-  const [loading, setLoading] = useState(false); // No loading delay — we restore from localStorage
+  const loading = false;
 
   const login = useCallback(async (username, password) => {
     const data = await authApi.login(username, password);
@@ -48,6 +48,8 @@ export function AuthProvider({ children }) {
   );
 }
 
+// This module intentionally exports both the provider and its consumer hook.
+// eslint-disable-next-line react-refresh/only-export-components
 export function useAuth() {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error('useAuth must be used within AuthProvider');

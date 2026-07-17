@@ -11,7 +11,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import List
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -55,6 +55,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
+        validate_default=True,
     )
 
     # ---- API Keys ----------------------------------------------------------
@@ -243,6 +244,22 @@ class Settings(BaseSettings):
     log_format: str = Field(
         default="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
     )
+    log_json: bool = Field(
+        default=True,
+        description="Emit structured JSON logs suitable for production log collection.",
+    )
+
+    # ---- Operations --------------------------------------------------------
+    database_backup_dir: str = Field(
+        default="backups",
+        description="Directory for SQLite backups. Relative paths are stored beside the database.",
+    )
+    database_backup_retention_days: int = Field(
+        default=14,
+        ge=1,
+        le=3650,
+        description="Number of days to retain automatic SQLite backups.",
+    )
 
     # ---- API Server --------------------------------------------------------
     api_host: str = Field(default="0.0.0.0")
@@ -250,12 +267,20 @@ class Settings(BaseSettings):
 
     # ---- Security -----------------------------------------------------------
     cors_allowed_origins: List[str] = Field(
-        default=["*"],
-        description="Allowed CORS origins. Set to ['*'] to allow all origins.",
+        default=["http://localhost:5173", "http://127.0.0.1:5173"],
+        description="Explicit browser origins permitted to call the API.",
     )
     pipeline_api_key: str = Field(
         default="",
-        description="Shared secret for /pipeline/run. Leave empty to disable auth.",
+        description="Optional service-to-service secret for pipeline triggers. Authenticated users may also trigger scans.",
+    )
+    api_rate_limit_requests: int = Field(
+        default=180, ge=10, le=10_000,
+        description="Maximum API requests per client per rate-limit window.",
+    )
+    api_rate_limit_window_seconds: int = Field(
+        default=60, ge=1, le=3_600,
+        description="Rolling rate-limit window in seconds.",
     )
 
     # ---- Authentication (single-operator) -----------------------------------
@@ -280,6 +305,31 @@ class Settings(BaseSettings):
         if upper not in allowed:
             raise ValueError(f"log_level must be one of {allowed}")
         return upper
+
+    @field_validator("cors_allowed_origins")
+    @classmethod
+    def _validate_cors_origins(cls, origins: List[str]) -> List[str]:
+        cleaned = [origin.strip().rstrip("/") for origin in origins if origin and origin.strip()]
+        if not cleaned:
+            raise ValueError("cors_allowed_origins must contain at least one explicit origin")
+        if "*" in cleaned:
+            raise ValueError("Wildcard CORS origins are not allowed when credentials are enabled")
+        if any(not origin.startswith(("http://", "https://")) for origin in cleaned):
+            raise ValueError("Each CORS origin must include http:// or https://")
+        return cleaned
+
+    @field_validator("genx_auth_secret")
+    @classmethod
+    def _validate_auth_secret(cls, secret: str) -> str:
+        if secret and len(secret) < 32:
+            raise ValueError("GENX_AUTH_SECRET must be at least 32 characters long")
+        return secret
+
+    @model_validator(mode="after")
+    def _require_secret_for_configured_auth(self) -> "Settings":
+        if (self.genx_admin_username or self.genx_admin_password) and not self.genx_auth_secret:
+            raise ValueError("GENX_AUTH_SECRET is required when admin credentials are configured")
+        return self
 
 
 @lru_cache(maxsize=1)

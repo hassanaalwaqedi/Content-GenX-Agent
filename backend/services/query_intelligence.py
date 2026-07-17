@@ -41,8 +41,10 @@ class QueryContext:
     normalized_terms: List[str] = field(default_factory=list)
 
     # Platform-specific search variants
+    youtube_variants: List[str] = field(default_factory=list)
     tiktok_variants: List[str] = field(default_factory=list)
     instagram_variants: List[str] = field(default_factory=list)
+    reddit_variants: List[str] = field(default_factory=list)
 
     # Synonym expansions
     synonyms: List[str] = field(default_factory=list)
@@ -60,8 +62,10 @@ class QueryContext:
         return {
             "original_keyword": self.original_keyword,
             "normalized_terms": self.normalized_terms,
+            "youtube_variants": self.youtube_variants,
             "tiktok_variants": self.tiktok_variants,
             "instagram_variants": self.instagram_variants,
+            "reddit_variants": self.reddit_variants,
             "synonyms": self.synonyms,
             "required_terms": self.required_terms,
             "soft_terms": self.soft_terms,
@@ -236,8 +240,10 @@ class QueryIntelligenceEngine:
         synonyms = self._generate_synonyms(kw_lower, normalized)
 
         # Step 3: Build platform-specific variants
+        youtube_variants = self._build_youtube_variants(kw_lower, normalized, synonyms)
         tiktok_variants = self._build_tiktok_variants(kw_lower, normalized, synonyms)
         instagram_variants = self._build_instagram_variants(kw_lower, normalized, synonyms)
+        reddit_variants = self._build_reddit_variants(kw_lower, normalized, synonyms)
 
         # Step 4: Build relevance term sets
         required_terms = [kw_lower] + normalized[:2]
@@ -252,8 +258,10 @@ class QueryIntelligenceEngine:
         ctx = QueryContext(
             original_keyword=keyword,
             normalized_terms=normalized,
+            youtube_variants=youtube_variants,
             tiktok_variants=tiktok_variants,
             instagram_variants=instagram_variants,
+            reddit_variants=reddit_variants,
             synonyms=synonyms,
             required_terms=list(dict.fromkeys(required_terms)),
             soft_terms=list(dict.fromkeys(soft_terms)),
@@ -262,11 +270,13 @@ class QueryIntelligenceEngine:
         )
 
         logger.info(
-            "[QUERY] expanded_terms=%s synonyms=%s tiktok_variants=%d ig_variants=%d",
+            "[QUERY] expanded_terms=%s synonyms=%s youtube_variants=%d tiktok_variants=%d ig_variants=%d reddit_variants=%d",
             normalized,
             synonyms[:5],
+            len(youtube_variants),
             len(tiktok_variants),
             len(instagram_variants),
+            len(reddit_variants),
         )
 
         return ctx
@@ -285,33 +295,24 @@ class QueryIntelligenceEngine:
         merged = QueryContext(
             original_keyword=" + ".join(c.original_keyword for c in contexts),
         )
-        seen: Set[str] = set()
 
-        for ctx in contexts:
-            for term in ctx.normalized_terms:
-                if term not in seen:
-                    seen.add(term)
-                    merged.normalized_terms.append(term)
-            for term in ctx.tiktok_variants:
-                if term not in seen:
-                    seen.add(term)
-                    merged.tiktok_variants.append(term)
-            for term in ctx.instagram_variants:
-                if term not in seen:
-                    seen.add(term)
-                    merged.instagram_variants.append(term)
-            for term in ctx.synonyms:
-                if term not in seen:
-                    seen.add(term)
-                    merged.synonyms.append(term)
-            for term in ctx.required_terms:
-                if term not in seen:
-                    seen.add(term)
-                    merged.required_terms.append(term)
-            for term in ctx.soft_terms:
-                if term not in seen:
-                    seen.add(term)
-                    merged.soft_terms.append(term)
+        def merge_field(name: str) -> None:
+            values: List[str] = []
+            for context in contexts:
+                values.extend(getattr(context, name))
+            setattr(merged, name, list(dict.fromkeys(values)))
+
+        for field_name in (
+            "normalized_terms",
+            "youtube_variants",
+            "tiktok_variants",
+            "instagram_variants",
+            "reddit_variants",
+            "synonyms",
+            "required_terms",
+            "soft_terms",
+        ):
+            merge_field(field_name)
 
         merged.negative_terms = list(_NEGATIVE_INDICATORS)
         merged.all_positive_terms = list(dict.fromkeys(
@@ -450,6 +451,29 @@ class QueryIntelligenceEngine:
         return synonyms[: self._max_synonyms * 2]
 
     # ── Platform-Specific Variants ──────────────────────────────────────────
+
+    def _build_youtube_variants(
+        self,
+        keyword: str,
+        normalized: List[str],
+        synonyms: List[str],
+    ) -> List[str]:
+        """Generate concise search phrases for YouTube's keyword search API."""
+        variants = [keyword, *normalized[:3], *synonyms[:3]]
+        # YouTube search terms are phrases, not hashtags. Preserve order so
+        # the operator's original keyword is always searched first.
+        return list(dict.fromkeys(term.strip() for term in variants if term.strip()))[:8]
+
+    def _build_reddit_variants(
+        self,
+        keyword: str,
+        normalized: List[str],
+        synonyms: List[str],
+    ) -> List[str]:
+        """Generate plain-language Reddit search terms and community phrases."""
+        base = normalized[0] if normalized else keyword
+        variants = [keyword, base, *normalized[1:3], *synonyms[:4]]
+        return list(dict.fromkeys(term.strip() for term in variants if term.strip()))[:8]
 
     def _build_tiktok_variants(
         self,

@@ -4,11 +4,13 @@ services:
       context: ./backend
       dockerfile: deploy/Dockerfile
     ports:
-      - "127.0.0.1:8000:80"
+      - "127.0.0.1:8000:8000"
     volumes:
       - ./data:/app/data
     env_file:
-      - .env
+      - ./backend/.env
+    environment:
+      - SQLITE_DB_PATH=/app/data/content_intelligence.db
     restart: always
     logging:
       driver: "json-file"
@@ -24,7 +26,9 @@ services:
     volumes:
       - ./data:/app/data
     env_file:
-      - .env
+      - ./backend/.env
+    environment:
+      - SQLITE_DB_PATH=/app/data/content_intelligence.db
     restart: always
     depends_on:
       - backend

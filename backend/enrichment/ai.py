@@ -80,6 +80,8 @@ def _apply_pending_defaults(video: Dict[str, Any]) -> Dict[str, Any]:
     video.setdefault("target_audience", _PENDING)
     video.setdefault("strategic_advice", _PENDING)
     video.setdefault("content_gap", _PENDING)
+    if video.get("platform") == "reddit":
+        video.setdefault("reddit_insights", {"analysis_status": "pending"})
     return video
 
 
@@ -157,6 +159,24 @@ _STRATEGIC_PROMPT = (
     "- Respond ONLY with valid JSON, no markdown, no explanation."
 )
 
+_REDDIT_PROMPT = (
+    "You are analyzing a Reddit discussion for market intelligence. Return only valid JSON. "
+    "Base every conclusion strictly on the supplied title and post body; if the evidence is weak, "
+    "use an empty list or null rather than inventing a claim.\n\n"
+    "{\n"
+    '  "topics": ["topic_slug"],\n'
+    '  "summary": "one sentence summary",\n'
+    '  "target_audience": "audience or Analysis pending",\n'
+    '  "strategic_advice": "1) concise insight. 2) concise insight. 3) concise insight.",\n'
+    '  "content_gap": "unmet need or Analysis pending",\n'
+    '  "sentiment": "positive|neutral|negative|mixed",\n'
+    '  "pain_points": ["evidence-based user problem"],\n'
+    '  "cluster": "short topic cluster or null",\n'
+    '  "opportunity_score": 0\n'
+    "}\n\n"
+    "Rules: return 1-5 topic slugs, at most 3 pain points, and an integer opportunity_score from 0 to 100."
+)
+
 
 def _extract_strategic_insights(
     client: GroqClient, title: str, description: str
@@ -212,6 +232,59 @@ def _extract_strategic_insights(
         }
 
 
+def _extract_reddit_insights(
+    client: GroqClient, title: str, description: str
+) -> Dict[str, Any]:
+    """Produce Reddit-specific enrichment without fabricating unsupported claims."""
+    messages = [
+        {"role": "system", "content": _REDDIT_PROMPT},
+        {"role": "user", "content": f"Title: {title}\nPost body: {(description or '')[:2000]}"},
+    ]
+    try:
+        raw = client.chat(messages)
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned
+            cleaned = cleaned.rsplit("```", 1)[0]
+        cleaned = re.sub(r'(?<!\\)\n', ' ', cleaned)
+        result = json.loads(cleaned)
+
+        topics_raw = result.get("topics", [])
+        topics = [str(topic).strip() for topic in topics_raw if str(topic).strip()][:5] if isinstance(topics_raw, list) else []
+        sentiment = str(result.get("sentiment", "")).lower().strip()
+        if sentiment not in {"positive", "neutral", "negative", "mixed"}:
+            sentiment = None
+        pains_raw = result.get("pain_points", [])
+        pain_points = [str(pain).strip() for pain in pains_raw if str(pain).strip()][:3] if isinstance(pains_raw, list) else []
+        try:
+            opportunity_score = max(0, min(100, int(result.get("opportunity_score"))))
+        except (TypeError, ValueError):
+            opportunity_score = None
+        cluster = result.get("cluster")
+        cluster = str(cluster).strip()[:100] if cluster else None
+
+        return {
+            "topics": json.dumps(topics or _extract_topics_rule_based(title, description)),
+            "content_category": (topics[0] if topics else "uncategorized"),
+            "ai_summary": str(result.get("summary", ""))[:500],
+            "target_audience": str(result.get("target_audience", _PENDING))[:300],
+            "strategic_advice": str(result.get("strategic_advice", _PENDING))[:800],
+            "content_gap": str(result.get("content_gap", _PENDING))[:500],
+            "reddit_insights": {
+                "analysis_status": "complete",
+                "sentiment": sentiment,
+                "pain_points": pain_points,
+                "cluster": cluster,
+                "opportunity_score": opportunity_score,
+            },
+        }
+    except (json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
+        logger.warning("Reddit enrichment parse error: %s -- using pending.", exc)
+        return _apply_pending_defaults({
+            "platform": "reddit", "title": title, "description": description,
+        })
+
+
 # ---------------------------------------------------------------------------
 # Single-video enrichment with rate-limit handling
 # ---------------------------------------------------------------------------
@@ -231,7 +304,11 @@ def enrich_video(
     if client:
         for attempt in range(_MAX_RETRIES_PER_VIDEO + 1):
             try:
-                ai_data = _extract_strategic_insights(client, title, description)
+                ai_data = (
+                    _extract_reddit_insights(client, title, description)
+                    if video.get("platform") == "reddit"
+                    else _extract_strategic_insights(client, title, description)
+                )
                 video.update(ai_data)
                 return video
             except requests.HTTPError as exc:

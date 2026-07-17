@@ -17,7 +17,7 @@ RUN echo 'server { \
     gzip on; \
     gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript; \
     location /api/ { \
-        proxy_pass http://backend:80/; \
+        proxy_pass http://backend:8000/; \
         proxy_set_header Host $host; \
         proxy_set_header X-Real-IP $remote_addr; \
     } \

@@ -118,6 +118,8 @@ class RawVideo:
     platform: str = "youtube"
     source_region: str = ""
     content_type: str = "all"
+    source_url: str = ""
+    platform_metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

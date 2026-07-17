@@ -1,0 +1,31 @@
+# Secrets and local environment configuration
+.env
+.env.*
+!.env.example
+backend/.env
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+
+# Local SQLite data
+*.db
+*.db-shm
+*.db-wal
+data/
+backend/backups/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# JavaScript artifacts
+node_modules/
+dist/
+
+# Local editor and OS files
+.vscode/
+.idea/
+.DS_Store

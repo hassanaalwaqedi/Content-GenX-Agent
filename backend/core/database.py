@@ -8,6 +8,7 @@ with upsert semantics. Uses WAL mode for concurrent read access.
 from __future__ import annotations
 
 import logging
+import json
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -43,6 +44,9 @@ CREATE TABLE IF NOT EXISTS videos (
     topics          TEXT DEFAULT '',
     source_region   TEXT DEFAULT '',
     content_type    TEXT DEFAULT 'all',
+    source_url      TEXT DEFAULT '',
+    platform_metadata TEXT DEFAULT '{}',
+    reddit_insights TEXT DEFAULT '{}',
     pipeline_run_id INTEGER,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
@@ -96,9 +100,10 @@ INSERT INTO videos (
     video_id, platform, niche, title, views, likes, comments,
     engagement_rate, score, published_at, channel, thumbnail_url,
     description, target_audience, strategic_advice, content_gap,
-    transcript, topics, source_region, content_type, pipeline_run_id,
+    transcript, topics, source_region, content_type, source_url,
+    platform_metadata, reddit_insights, pipeline_run_id,
     created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(video_id) DO UPDATE SET
     views             = excluded.views,
     likes             = excluded.likes,
@@ -115,6 +120,9 @@ ON CONFLICT(video_id) DO UPDATE SET
     topics            = CASE WHEN excluded.topics != '' THEN excluded.topics ELSE videos.topics END,
     source_region     = CASE WHEN excluded.source_region != '' THEN excluded.source_region ELSE videos.source_region END,
     content_type      = CASE WHEN excluded.content_type != 'all' THEN excluded.content_type ELSE videos.content_type END,
+    source_url        = CASE WHEN excluded.source_url != '' THEN excluded.source_url ELSE videos.source_url END,
+    platform_metadata = CASE WHEN excluded.platform_metadata != '{}' THEN excluded.platform_metadata ELSE videos.platform_metadata END,
+    reddit_insights   = CASE WHEN excluded.reddit_insights != '{}' THEN excluded.reddit_insights ELSE videos.reddit_insights END,
     pipeline_run_id   = excluded.pipeline_run_id,
     updated_at        = excluded.updated_at;
 """
@@ -171,6 +179,9 @@ _COLUMN_MIGRATIONS = [
     ("topics", "TEXT DEFAULT ''"),
     ("source_region", "TEXT DEFAULT ''"),
     ("content_type", "TEXT DEFAULT 'all'"),
+    ("source_url", "TEXT DEFAULT ''"),
+    ("platform_metadata", "TEXT DEFAULT '{}'"),
+    ("reddit_insights", "TEXT DEFAULT '{}'"),
     ("pipeline_run_id", "INTEGER"),
 ]
 
@@ -260,7 +271,7 @@ def init_db() -> None:
 
 
 def _safe_create_indexes(conn: sqlite3.Connection) -> None:
-    """Create indexes that depend on migrated columns, ignoring errors for existing ones."""
+    """Create indexes that depend on migrated columns and log any failure."""
     index_statements = [
         "CREATE INDEX IF NOT EXISTS idx_videos_region ON videos(source_region);",
         "CREATE INDEX IF NOT EXISTS idx_videos_content_type ON videos(content_type);",
@@ -269,8 +280,9 @@ def _safe_create_indexes(conn: sqlite3.Connection) -> None:
     for stmt in index_statements:
         try:
             conn.execute(stmt)
-        except Exception:
-            pass  # Index may already exist or column missing in edge cases
+        except sqlite3.DatabaseError as exc:
+            logger.error("Unable to create database index: %s; error=%s", stmt, exc)
+            raise
 
 
 def insert_videos(videos: List[dict]) -> int:
@@ -313,6 +325,9 @@ def insert_videos(videos: List[dict]) -> int:
                         v.get("topics", ""),
                         v.get("source_region", ""),
                         v.get("content_type", "all"),
+                        v.get("source_url", ""),
+                        json.dumps(v.get("platform_metadata", {})),
+                        json.dumps(v.get("reddit_insights", {})),
                         v.get("pipeline_run_id"),
                         now,  # created_at
                         now,  # updated_at
@@ -371,6 +386,20 @@ def get_pipeline_history(limit: int = 10) -> List[Dict[str, Any]]:
 _STALE_RUN_MINUTES: int = 15
 
 
+def _serialize_pipeline_snapshot(config_snapshot: Optional[Dict[str, Any]]) -> tuple[str, str, str, str, str, str, Optional[int]]:
+    """Convert a run configuration into the database representation."""
+    cfg = config_snapshot or {}
+    return (
+        json.dumps(cfg.get("regions", [])),
+        json.dumps(cfg.get("categories", [])),
+        json.dumps(cfg.get("keywords", [])),
+        json.dumps(cfg.get("sources", ["youtube"])),
+        cfg.get("content_type", "all"),
+        cfg.get("dataset_label", ""),
+        cfg.get("config_id"),
+    )
+
+
 def is_pipeline_running() -> bool:
     """
     Check if a pipeline run is currently active in the database.
@@ -424,22 +453,42 @@ def acquire_pipeline_lock(
     Stores a snapshot of the pipeline config for dataset provenance.
     Returns the run ID. Raises RuntimeError if a run is already active.
     """
-    import json as _json
-
-    if is_pipeline_running():
-        raise RuntimeError("A pipeline run is already in progress.")
-
     now = datetime.now(timezone.utc).isoformat()
-    cfg = config_snapshot or {}
-    regions = _json.dumps(cfg.get("regions", []))
-    categories = _json.dumps(cfg.get("categories", []))
-    keywords = _json.dumps(cfg.get("keywords", []))
-    sources = _json.dumps(cfg.get("sources", ["youtube"]))
-    content_type = cfg.get("content_type", "all")
-    dataset_label = cfg.get("dataset_label", "")
-    config_id = cfg.get("config_id")
+    regions, categories, keywords, sources, content_type, dataset_label, config_id = _serialize_pipeline_snapshot(
+        config_snapshot
+    )
 
     with get_connection() as conn:
+        # A write transaction serializes this check and insert. The old
+        # check-then-insert approach could let two requests start together.
+        conn.execute("BEGIN IMMEDIATE")
+        running = conn.execute(
+            """SELECT id, started_at FROM pipeline_runs
+               WHERE status = 'running'
+               ORDER BY started_at DESC LIMIT 1;"""
+        ).fetchone()
+        if running:
+            try:
+                started = datetime.fromisoformat(running["started_at"])
+                elapsed_min = (datetime.now(timezone.utc) - started).total_seconds() / 60
+            except (ValueError, TypeError):
+                elapsed_min = 0
+
+            if elapsed_min > _STALE_RUN_MINUTES:
+                logger.warning(
+                    "Pipeline run #%d has been 'running' for %.0f min -- marking stale.",
+                    running["id"],
+                    elapsed_min,
+                )
+                conn.execute(
+                    """UPDATE pipeline_runs SET status = 'crashed',
+                       finished_at = ?, error_message = 'Marked stale after timeout'
+                       WHERE id = ?""",
+                    (now, running["id"]),
+                )
+            else:
+                raise RuntimeError("A pipeline run is already in progress.")
+
         cursor = conn.execute(
             """INSERT INTO pipeline_runs
                (started_at, status, triggered_by,
@@ -453,6 +502,23 @@ def acquire_pipeline_lock(
     logger.info("Pipeline lock acquired (run #%d, triggered_by=%s, label=%s).",
                 run_id, triggered_by, dataset_label)
     return run_id
+
+
+def update_pipeline_run_snapshot(run_id: int, config_snapshot: Dict[str, Any]) -> None:
+    """Fill in provenance for a scan lock reserved before background work starts."""
+    regions, categories, keywords, sources, content_type, dataset_label, config_id = _serialize_pipeline_snapshot(
+        config_snapshot
+    )
+    with get_connection() as conn:
+        cursor = conn.execute(
+            """UPDATE pipeline_runs SET
+                   config_regions = ?, config_categories = ?, config_keywords = ?,
+                   config_sources = ?, config_content_type = ?, dataset_label = ?, config_id = ?
+               WHERE id = ? AND status = 'running'""",
+            (regions, categories, keywords, sources, content_type, dataset_label, config_id, run_id),
+        )
+        if cursor.rowcount != 1:
+            raise RuntimeError(f"Unable to update active pipeline run #{run_id}.")
 
 
 def release_pipeline_lock(run_id: int, result: Dict[str, Any]) -> None:
